@@ -4,7 +4,13 @@ on:
   workflow_dispatch:
 
   schedule:
+    # Every 15 minutes, Monday-Friday.
+    # Wide UTC window handles EST/EDT.
+    # bot.py enforces 9:30 AM-4:00 PM New York time.
     - cron: "*/15 13-21 * * 1-5"
+
+permissions:
+  contents: read
 
 jobs:
   run-bot:
@@ -15,17 +21,32 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+
+      - name: Restore bot state
+        uses: actions/cache/restore@v5
+        with:
+          path: .bot_state
+          key: trading-bot-state-${{ github.run_id }}
+          restore-keys: |
+            trading-bot-state-
 
       - name: Install packages
         run: |
           python -m pip install --upgrade pip
-          pip install yfinance pandas numpy requests
+          pip install yfinance pandas requests
 
       - name: Run bot
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           python bot.py
+
+      - name: Save bot state
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: .bot_state
+          key: trading-bot-state-${{ github.run_id }}
