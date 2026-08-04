@@ -1,3 +1,5 @@
+import os
+import requests
 import yfinance as yf
 import pandas as pd
 
@@ -29,6 +31,42 @@ PULLBACK_DISTANCE = 0.01
 
 
 # ==========================================
+# DISCORD
+# ==========================================
+
+def send_discord_message(message):
+
+    webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
+
+    if not webhook_url:
+        print("Discord webhook not configured.")
+        return False
+
+    try:
+
+        response = requests.post(
+            webhook_url,
+            json={"content": message},
+            timeout=10
+        )
+
+        response.raise_for_status()
+
+        print("Discord notification sent.")
+
+        return True
+
+    except Exception as error:
+
+        print(
+            "Discord notification failed:",
+            error
+        )
+
+        return False
+
+
+# ==========================================
 # MARKET HOURS
 # ==========================================
 
@@ -38,7 +76,8 @@ def market_is_open():
         ZoneInfo("America/New_York")
     )
 
-    # Monday = 0, Friday = 4
+    # Monday = 0
+    # Friday = 4
     if now_et.weekday() > 4:
         return False
 
@@ -64,7 +103,7 @@ def market_is_open():
 
 
 # ==========================================
-# DOWNLOAD DATA
+# DOWNLOAD MARKET DATA
 # ==========================================
 
 def get_data(
@@ -82,22 +121,27 @@ def get_data(
     )
 
     if data.empty:
+
         raise ValueError(
             f"No data returned for {ticker}"
         )
 
-    # Handle yfinance MultiIndex
+    # Handle yfinance MultiIndex columns
     if isinstance(
         data.columns,
         pd.MultiIndex
     ):
+
         try:
+
             data = data.xs(
                 ticker,
                 axis=1,
                 level=1
             )
+
         except Exception:
+
             data.columns = (
                 data.columns
                 .get_level_values(0)
@@ -142,7 +186,9 @@ def market_regime_check():
     )
 
     volatility = float(
-        returns.tail(20).std()
+        returns
+        .tail(20)
+        .std()
         * 100
     )
 
@@ -228,13 +274,15 @@ def scan_stock(
     data = get_data(ticker)
 
     if len(data) < 201:
+
         raise ValueError(
             f"Not enough data for {ticker}"
         )
 
-    # --------------------------
-    # Indicators
-    # --------------------------
+
+    # ======================================
+    # INDICATORS
+    # ======================================
 
     data["EMA20"] = (
         data["Close"]
@@ -260,9 +308,10 @@ def scan_stock(
         .mean()
     )
 
-    # --------------------------
+
+    # ======================================
     # ATR
-    # --------------------------
+    # ======================================
 
     previous_close = (
         data["Close"]
@@ -275,10 +324,12 @@ def scan_stock(
                 data["High"]
                 - data["Low"]
             ),
+
             (
                 data["High"]
                 - previous_close
             ).abs(),
+
             (
                 data["Low"]
                 - previous_close
@@ -292,6 +343,7 @@ def scan_stock(
         .rolling(14)
         .mean()
     )
+
 
     current = data.iloc[-1]
     previous = data.iloc[-2]
@@ -321,6 +373,7 @@ def scan_stock(
     )
 
     confidence = 0
+
     reasons = []
 
 
@@ -333,11 +386,15 @@ def scan_stock(
     )
 
     if trend_pass:
+
         confidence += 20
+
         reasons.append(
             "Trend PASS"
         )
+
     else:
+
         reasons.append(
             "Trend FAIL"
         )
@@ -360,11 +417,15 @@ def scan_stock(
     )
 
     if pullback_pass:
+
         confidence += 20
+
         reasons.append(
             "Pullback PASS"
         )
+
     else:
+
         reasons.append(
             "Pullback FAIL"
         )
@@ -379,11 +440,15 @@ def scan_stock(
     )
 
     if volume_pass:
+
         confidence += 15
+
         reasons.append(
             "Volume PASS"
         )
+
     else:
+
         reasons.append(
             "Volume FAIL"
         )
@@ -456,11 +521,15 @@ def scan_stock(
     )
 
     if reversal_pass:
+
         confidence += 15
+
         reasons.append(
             "Reversal PASS"
         )
+
     else:
+
         reasons.append(
             "Reversal FAIL"
         )
@@ -490,11 +559,15 @@ def scan_stock(
     )
 
     if rs_pass:
+
         confidence += 10
+
         reasons.append(
             "Relative Strength PASS"
         )
+
     else:
+
         reasons.append(
             "Relative Strength FAIL"
         )
@@ -507,13 +580,11 @@ def scan_stock(
     entry = price
 
     stop = (
-        entry
-        - atr
+        entry - atr
     )
 
     risk_per_share = (
-        entry
-        - stop
+        entry - stop
     )
 
     target = (
@@ -539,13 +610,13 @@ def scan_stock(
     )
 
     eligible = (
-        confidence
-        >= MIN_CONFIDENCE
-        and
-        required_conditions
+        confidence >= MIN_CONFIDENCE
+        and required_conditions
     )
 
+
     return {
+
         "Ticker":
             ticker,
 
@@ -604,6 +675,7 @@ def scan_stock(
 def calculate_position(trade):
 
     entry = trade["Entry"]
+
     stop = trade["Stop"]
 
     risk_per_share = (
@@ -611,6 +683,7 @@ def calculate_position(trade):
     )
 
     if risk_per_share <= 0:
+
         return None
 
     capital_limit = min(
@@ -638,6 +711,7 @@ def calculate_position(trade):
     )
 
     return {
+
         "Shares":
             round(
                 position_size,
@@ -659,7 +733,7 @@ def calculate_position(trade):
 
 
 # ==========================================
-# OUTPUT
+# PRINT TRADE
 # ==========================================
 
 def print_trade(
@@ -731,6 +805,7 @@ def print_trade(
     print("\nConditions:")
 
     for reason in trade["Reasons"]:
+
         print(
             "-",
             reason
@@ -759,6 +834,7 @@ def save_run_log(
 
         rows.append(
             {
+
                 "TimeUTC":
                     timestamp,
 
@@ -819,15 +895,24 @@ def save_run_log(
 
 def run_bot():
 
+    # TEMPORARY TEST MESSAGE
+    # We will remove this after confirming Discord works.
+    send_discord_message(
+        "✅ Trend Pullback Bot: GitHub → Discord connection successful."
+    )
+
+
     now_et = datetime.now(
         ZoneInfo(
             "America/New_York"
         )
     )
 
+
     print("======================")
     print("TREND PULLBACK BOT")
     print("======================")
+
 
     print(
         "New York time:",
@@ -836,6 +921,7 @@ def run_bot():
         )
     )
 
+
     print(
         "UTC:",
         datetime.now(
@@ -843,9 +929,10 @@ def run_bot():
         )
     )
 
-    # --------------------------------------
+
+    # ======================================
     # MARKET HOURS CHECK
-    # --------------------------------------
+    # ======================================
 
     if not market_is_open():
 
@@ -860,9 +947,9 @@ def run_bot():
         return
 
 
-    # --------------------------------------
+    # ======================================
     # MARKET REGIME FILTER
-    # --------------------------------------
+    # ======================================
 
     if not market_regime_check():
 
@@ -887,16 +974,18 @@ def run_bot():
         "Scanning watchlist...\n"
     )
 
+
     spy_return = (
         get_spy_return()
     )
 
+
     results = []
 
 
-    # --------------------------------------
+    # ======================================
     # SCAN WATCHLIST
-    # --------------------------------------
+    # ======================================
 
     for ticker in WATCHLIST:
 
@@ -928,9 +1017,9 @@ def run_bot():
             )
 
 
-    # --------------------------------------
+    # ======================================
     # RANK RESULTS
-    # --------------------------------------
+    # ======================================
 
     results.sort(
         key=lambda x:
@@ -938,17 +1027,22 @@ def run_bot():
         reverse=True
     )
 
+
     eligible = [
+
         trade
+
         for trade
         in results
+
         if trade["Eligible"]
+
     ]
 
 
-    # --------------------------------------
+    # ======================================
     # NO TRADE
-    # --------------------------------------
+    # ======================================
 
     if not eligible:
 
@@ -988,13 +1082,14 @@ def run_bot():
         return
 
 
-    # --------------------------------------
+    # ======================================
     # BEST TRADE
-    # --------------------------------------
+    # ======================================
 
     best_trade = (
         eligible[0]
     )
+
 
     position = (
         calculate_position(
@@ -1002,10 +1097,12 @@ def run_bot():
         )
     )
 
+
     print_trade(
         best_trade,
         position
     )
+
 
     save_run_log(
         results,
@@ -1014,8 +1111,9 @@ def run_bot():
 
 
 # ==========================================
-# START BOT
+# START
 # ==========================================
 
 if __name__ == "__main__":
+
     run_bot()
