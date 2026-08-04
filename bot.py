@@ -25,26 +25,33 @@ WATCHLIST = [
 ACCOUNT_BALANCE = 20.00
 MAX_CAPITAL_PER_TRADE = 20.00
 
-# Only look for new entries during the early-session window.
-TRADE_WINDOW_START_HOUR = 10
-TRADE_WINDOW_START_MINUTE = 0
+# ------------------------------------------------------------
+# PRIMARY MORNING SETUP
+# First completed hourly candle = 9:30-10:30 ET
+# ------------------------------------------------------------
 
-TRADE_WINDOW_END_HOUR = 11
-TRADE_WINDOW_END_MINUTE = 0
+PRIMARY_MIN_VOLUME_RATIO = 1.00
 
-# Volume must be at least this multiple of its 20-hour average.
-MIN_VOLUME_RATIO = 1.0
+# ------------------------------------------------------------
+# SECONDARY LATER-DAY SETUP
+# More selective than the morning setup
+# ------------------------------------------------------------
 
-# Price must come within this many ATRs of EMA20.
+SECONDARY_MIN_VOLUME_RATIO = 1.25
+SECONDARY_REQUIRE_VWAP = True
+
+# Stop taking new secondary setups after this time
+SECONDARY_END_HOUR = 14
+SECONDARY_END_MINUTE = 45
+
+# ------------------------------------------------------------
+# EMA / ATR SETTINGS
+# ------------------------------------------------------------
+
 MAX_EMA_DISTANCE_ATR = 0.50
 
-# Risk management
-STOP_ATR_MULTIPLIER = 1.0
-TARGET_ATR_MULTIPLIER = 1.5
-
-# We have NOT validated VWAP enough yet.
-# Leave False until we backtest it properly.
-REQUIRE_VWAP = False
+STOP_ATR_MULTIPLIER = 1.00
+TARGET_ATR_MULTIPLIER = 1.50
 
 STATE_FILE = ".bot_state/alert_state.json"
 
@@ -62,7 +69,6 @@ def send_discord_message(message):
         return False
 
     try:
-
         response = requests.post(
             webhook_url,
             json={
@@ -91,7 +97,7 @@ def send_discord_message(message):
 
 
 # ============================================================
-# STATE / DUPLICATE PROTECTION
+# DUPLICATE ALERT STATE
 # ============================================================
 
 def load_alert_state():
@@ -100,7 +106,6 @@ def load_alert_state():
         return {}
 
     try:
-
         with open(
             STATE_FILE,
             "r",
@@ -112,7 +117,7 @@ def load_alert_state():
     except Exception as error:
 
         print(
-            "Could not load state:",
+            "Could not load alert state:",
             error,
         )
 
@@ -164,13 +169,13 @@ def mark_alerted(
     save_alert_state(state)
 
     print(
-        f"Saved signal state: "
+        f"Saved alert state: "
         f"{ticker} / {signal_id}"
     )
 
 
 # ============================================================
-# TIME CHECKS
+# TIME
 # ============================================================
 
 def get_new_york_time():
@@ -194,23 +199,23 @@ def market_is_open():
         + now.minute
     )
 
-    market_open = (
+    open_minutes = (
         9 * 60
         + 30
     )
 
-    market_close = (
+    close_minutes = (
         16 * 60
     )
 
     return (
-        market_open
+        open_minutes
         <= minutes
-        < market_close
+        < close_minutes
     )
 
 
-def inside_trade_window():
+def secondary_window_open():
 
     now = get_new_york_time()
 
@@ -220,13 +225,13 @@ def inside_trade_window():
     )
 
     start_minutes = (
-        TRADE_WINDOW_START_HOUR * 60
-        + TRADE_WINDOW_START_MINUTE
+        11 * 60
+        + 30
     )
 
     end_minutes = (
-        TRADE_WINDOW_END_HOUR * 60
-        + TRADE_WINDOW_END_MINUTE
+        SECONDARY_END_HOUR * 60
+        + SECONDARY_END_MINUTE
     )
 
     return (
@@ -237,7 +242,7 @@ def inside_trade_window():
 
 
 # ============================================================
-# DATA
+# DOWNLOAD 5-MINUTE DATA
 # ============================================================
 
 def download_5m_data(
@@ -255,19 +260,16 @@ def download_5m_data(
     )
 
     if data.empty:
-
         raise ValueError(
             f"No data returned for {ticker}"
         )
 
-    # Fix MultiIndex from yfinance
     if isinstance(
         data.columns,
         pd.MultiIndex,
     ):
 
         try:
-
             data = data.xs(
                 ticker,
                 axis=1,
@@ -281,7 +283,7 @@ def download_5m_data(
                 .get_level_values(0)
             )
 
-    required_columns = [
+    required = [
         "Open",
         "High",
         "Low",
@@ -290,12 +292,11 @@ def download_5m_data(
     ]
 
     data = data[
-        required_columns
+        required
     ].copy()
 
     data = data.dropna()
 
-    # Convert timestamps to New York time
     if data.index.tz is None:
 
         data.index = (
@@ -314,12 +315,11 @@ def download_5m_data(
 
 
 # ============================================================
-# BUILD HOURLY BARS FROM 5-MINUTE DATA
+# BUILD 60-MINUTE CANDLES FROM 5-MINUTE DATA
 # ============================================================
 
 def build_hourly_bars(data):
 
-    # Force 60-minute candles aligned to 9:30 ET.
     hourly = data.resample(
         "60min",
         origin="start_day",
@@ -338,25 +338,27 @@ def build_hourly_bars(data):
 
     hourly = hourly.dropna()
 
-    # Keep normal session-aligned bars only.
+    # Keep regular-market hourly bars only
     hourly = hourly[
-        (
-            hourly.index.hour > 9
-        )
-        |
         (
             (
                 hourly.index.hour == 9
             )
             &
             (
-                hourly.index.minute >= 30
+                hourly.index.minute == 30
             )
         )
-    ]
-
-    hourly = hourly[
-        hourly.index.hour < 16
+        |
+        (
+            (
+                hourly.index.hour >= 10
+            )
+            &
+            (
+                hourly.index.hour < 16
+            )
+        )
     ]
 
     return hourly
@@ -427,17 +429,19 @@ def calculate_indicators(hourly):
 
 
 # ============================================================
-# CURRENT-DAY VWAP
+# VWAP
 # ============================================================
 
-def calculate_current_vwap(
-    data,
-):
+def calculate_current_vwap(data):
 
-    today = get_new_york_time().date()
+    today = (
+        get_new_york_time()
+        .date()
+    )
 
     today_data = data[
-        data.index.date == today
+        data.index.date
+        == today
     ].copy()
 
     if today_data.empty:
@@ -458,6 +462,9 @@ def calculate_current_vwap(
         today_data["Volume"]
         .cumsum()
     )
+
+    if cumulative_volume.iloc[-1] <= 0:
+        return None
 
     vwap = (
         cumulative_value
@@ -483,27 +490,32 @@ def market_regime():
         "SPY"
     )
 
-    spy_hourly = (
-        build_hourly_bars(
-            spy_5m
-        )
+    spy_hourly = build_hourly_bars(
+        spy_5m
     )
 
-    spy_hourly = (
-        calculate_indicators(
-            spy_hourly
-        )
+    spy_hourly = calculate_indicators(
+        spy_hourly
     )
 
-    if len(spy_hourly) < 200:
+    now = get_new_york_time()
+
+    completed = spy_hourly[
+        spy_hourly.index
+        + pd.Timedelta(hours=1)
+        <= now
+    ]
+
+    if len(completed) < 200:
 
         print(
-            "Not enough SPY history."
+            "Not enough completed "
+            "SPY hourly history."
         )
 
         return False
 
-    current = spy_hourly.iloc[-1]
+    current = completed.iloc[-1]
 
     price = float(
         current["Close"]
@@ -514,7 +526,7 @@ def market_regime():
     )
 
     returns = (
-        spy_hourly["Close"]
+        completed["Close"]
         .pct_change()
         .dropna()
     )
@@ -534,14 +546,25 @@ def market_regime():
         volatility < 1.5
     )
 
+    approved = (
+        bullish
+        and volatility_ok
+    )
+
     print(
         "SPY:",
-        round(price, 2),
+        round(
+            price,
+            2,
+        ),
     )
 
     print(
         "EMA200:",
-        round(ema200, 2),
+        round(
+            ema200,
+            2,
+        ),
     )
 
     print(
@@ -560,11 +583,6 @@ def market_regime():
         "%",
     )
 
-    approved = (
-        bullish
-        and volatility_ok
-    )
-
     print(
         "Market:",
         "APPROVED"
@@ -576,14 +594,44 @@ def market_regime():
 
 
 # ============================================================
+# DETERMINE SIGNAL MODE
+# ============================================================
+
+def determine_mode(signal_time):
+
+    # --------------------------------------------------------
+    # Primary candle:
+    # 9:30-10:30 ET
+    #
+    # Hourly candle is labeled 9:30.
+    # --------------------------------------------------------
+
+    if (
+        signal_time.hour == 9
+        and
+        signal_time.minute == 30
+    ):
+
+        return "PRIMARY"
+
+    # --------------------------------------------------------
+    # Later completed candles
+    # --------------------------------------------------------
+
+    if secondary_window_open():
+
+        return "SECONDARY"
+
+    return "NONE"
+
+
+# ============================================================
 # SCAN ONE TICKER
 # ============================================================
 
 def scan_ticker(ticker):
 
-    print(
-        "\n----------------------"
-    )
+    print("\n----------------------")
 
     print(
         "Scanning:",
@@ -602,41 +650,19 @@ def scan_ticker(ticker):
         hourly
     )
 
-    if len(hourly) < 200:
-
-        raise ValueError(
-            f"Not enough hourly data for {ticker}"
-        )
-
-    # ========================================================
-    # IMPORTANT:
-    # Use the last FULLY COMPLETED hourly candle.
-    # ========================================================
-
     now = get_new_york_time()
 
-    current_hour_start = (
-        now.replace(
-            minute=30
-            if now.minute >= 30
-            else 30,
-            second=0,
-            microsecond=0,
-        )
-    )
-
-    # Safer method:
-    # remove the current incomplete bar
     completed = hourly[
         hourly.index
         + pd.Timedelta(hours=1)
         <= now
     ]
 
-    if completed.empty:
+    if len(completed) < 200:
 
         raise ValueError(
-            f"No completed hourly bar for {ticker}"
+            f"Not enough completed "
+            f"hourly data for {ticker}"
         )
 
     signal = completed.iloc[-1]
@@ -645,16 +671,29 @@ def scan_ticker(ticker):
         completed.index[-1]
     )
 
+    mode = determine_mode(
+        signal_time
+    )
+
+    if mode == "NONE":
+
+        print(
+            "No eligible signal window."
+        )
+
+        return None
+
+
+    # ========================================================
+    # VALUES
+    # ========================================================
+
     close = float(
         signal["Close"]
     )
 
     low = float(
         signal["Low"]
-    )
-
-    high = float(
-        signal["High"]
     )
 
     ema20 = float(
@@ -677,20 +716,25 @@ def scan_ticker(ticker):
         signal["AvgVolume20"]
     )
 
+
     if (
         pd.isna(atr)
-        or pd.isna(avg_volume)
-        or atr <= 0
-        or avg_volume <= 0
+        or
+        pd.isna(avg_volume)
+        or
+        atr <= 0
+        or
+        avg_volume <= 0
     ):
 
         raise ValueError(
-            f"Indicators unavailable for {ticker}"
+            f"Indicators unavailable "
+            f"for {ticker}"
         )
 
 
     # ========================================================
-    # CONDITION 1: LONG-TERM TREND
+    # TREND
     # ========================================================
 
     trend_pass = (
@@ -699,7 +743,7 @@ def scan_ticker(ticker):
 
 
     # ========================================================
-    # CONDITION 2: RELATIVE VOLUME
+    # VOLUME
     # ========================================================
 
     volume_ratio = (
@@ -707,14 +751,26 @@ def scan_ticker(ticker):
         / avg_volume
     )
 
+    if mode == "PRIMARY":
+
+        required_volume_ratio = (
+            PRIMARY_MIN_VOLUME_RATIO
+        )
+
+    else:
+
+        required_volume_ratio = (
+            SECONDARY_MIN_VOLUME_RATIO
+        )
+
     volume_pass = (
         volume_ratio
-        >= MIN_VOLUME_RATIO
+        >= required_volume_ratio
     )
 
 
     # ========================================================
-    # CONDITION 3: EMA20 PULLBACK / RECLAIM
+    # EMA20 RECLAIM
     # ========================================================
 
     distance_to_ema = abs(
@@ -737,17 +793,19 @@ def scan_ticker(ticker):
 
     reclaimed_ema = (
         touched_ema
-        and close > ema20
+        and
+        close > ema20
     )
 
     ema_pass = (
         near_ema
-        and reclaimed_ema
+        and
+        reclaimed_ema
     )
 
 
     # ========================================================
-    # CONDITION 4: VWAP
+    # VWAP
     # ========================================================
 
     vwap = calculate_current_vwap(
@@ -756,7 +814,7 @@ def scan_ticker(ticker):
 
     if vwap is None:
 
-        vwap_pass = True
+        vwap_pass = False
 
     else:
 
@@ -769,21 +827,30 @@ def scan_ticker(ticker):
     # FINAL ELIGIBILITY
     # ========================================================
 
-    if REQUIRE_VWAP:
+    if mode == "PRIMARY":
 
         eligible = (
             trend_pass
-            and volume_pass
-            and ema_pass
-            and vwap_pass
+            and
+            volume_pass
+            and
+            ema_pass
         )
 
     else:
 
         eligible = (
             trend_pass
-            and volume_pass
-            and ema_pass
+            and
+            volume_pass
+            and
+            ema_pass
+            and
+            (
+                vwap_pass
+                if SECONDARY_REQUIRE_VWAP
+                else True
+            )
         )
 
 
@@ -835,9 +902,19 @@ def scan_ticker(ticker):
 
     signal_id = (
         f"{ticker}_"
+        f"{mode}_"
         f"{signal_time.isoformat()}"
     )
 
+
+    # ========================================================
+    # PRINT DETAILS
+    # ========================================================
+
+    print(
+        "Mode:",
+        mode,
+    )
 
     print(
         "Signal candle:",
@@ -857,6 +934,12 @@ def scan_ticker(ticker):
             volume_ratio,
             2,
         ),
+        "x",
+    )
+
+    print(
+        "Required volume:",
+        required_volume_ratio,
         "x",
     )
 
@@ -893,13 +976,20 @@ def scan_ticker(ticker):
     )
 
     print(
-        "EMA touched:",
+        "Touched EMA20:",
         touched_ema,
     )
 
     print(
-        "EMA reclaim:",
+        "Reclaimed EMA20:",
         reclaimed_ema,
+    )
+
+    print(
+        "EMA setup:",
+        "PASS"
+        if ema_pass
+        else "FAIL",
     )
 
     if vwap is not None:
@@ -926,6 +1016,9 @@ def scan_ticker(ticker):
     return {
         "Ticker":
             ticker,
+
+        "Mode":
+            mode,
 
         "Eligible":
             eligible,
@@ -984,6 +1077,9 @@ def scan_ticker(ticker):
                 2,
             ),
 
+        "RequiredVolumeRatio":
+            required_volume_ratio,
+
         "VWAP":
             round(
                 vwap,
@@ -1008,12 +1104,10 @@ def scan_ticker(ticker):
 
 
 # ============================================================
-# POSITION SIZING
+# POSITION SIZE
 # ============================================================
 
-def calculate_position(
-    trade,
-):
+def calculate_position(trade):
 
     entry = trade["Entry"]
 
@@ -1024,7 +1118,6 @@ def calculate_position(
     )
 
     if risk_per_share <= 0:
-
         return None
 
     capital = min(
@@ -1033,8 +1126,7 @@ def calculate_position(
     )
 
     shares = (
-        capital
-        / entry
+        capital / entry
     )
 
     maximum_loss = (
@@ -1065,13 +1157,25 @@ def calculate_position(
 
 
 # ============================================================
-# DISCORD ALERT
+# DISCORD SIGNAL
 # ============================================================
 
 def send_trade_alert(
     trade,
     position,
 ):
+
+    if trade["Mode"] == "PRIMARY":
+
+        header = (
+            "🔥 **PRIMARY MORNING SIGNAL**"
+        )
+
+    else:
+
+        header = (
+            "⚡ **SECONDARY PULLBACK SIGNAL**"
+        )
 
     vwap_text = (
         f"${trade['VWAP']:.2f}"
@@ -1081,24 +1185,45 @@ def send_trade_alert(
     )
 
     message = (
-        "🚨 **EARLY SESSION PULLBACK SIGNAL**\n\n"
+        f"{header}\n\n"
 
-        f"**Ticker:** {trade['Ticker']}\n"
+        f"**Ticker:** "
+        f"{trade['Ticker']}\n"
+
+        f"**Mode:** "
+        f"{trade['Mode']}\n"
+
         f"**Direction:** LONG\n\n"
 
-        f"**Entry:** ${trade['Entry']:.2f}\n"
-        f"**Stop:** ${trade['Stop']:.2f}\n"
-        f"**Target:** ${trade['Target']:.2f}\n"
-        f"**R/R:** {trade['RR']:.2f}:1\n\n"
+        f"**Entry:** "
+        f"${trade['Entry']:.2f}\n"
 
-        f"**EMA20:** ${trade['EMA20']:.2f}\n"
-        f"**EMA200:** ${trade['EMA200']:.2f}\n"
-        f"**VWAP:** {vwap_text}\n"
+        f"**Stop:** "
+        f"${trade['Stop']:.2f}\n"
+
+        f"**Target:** "
+        f"${trade['Target']:.2f}\n"
+
+        f"**R/R:** "
+        f"{trade['RR']:.2f}:1\n\n"
+
+        f"**EMA20:** "
+        f"${trade['EMA20']:.2f}\n"
+
+        f"**EMA200:** "
+        f"${trade['EMA200']:.2f}\n"
+
+        f"**VWAP:** "
+        f"{vwap_text}\n"
 
         f"**Relative volume:** "
         f"{trade['VolumeRatio']:.2f}x\n"
 
-        f"**ATR:** ${trade['ATR']:.2f}\n\n"
+        f"**Required volume:** "
+        f"{trade['RequiredVolumeRatio']:.2f}x\n"
+
+        f"**ATR:** "
+        f"${trade['ATR']:.2f}\n\n"
 
         f"**Position:** "
         f"{position['Shares']} shares\n"
@@ -1119,12 +1244,10 @@ def send_trade_alert(
 
 
 # ============================================================
-# LOG RESULTS
+# SAVE SCAN
 # ============================================================
 
-def save_scan_log(
-    results,
-):
+def save_scan_log(results):
 
     os.makedirs(
         ".bot_state",
@@ -1150,6 +1273,9 @@ def save_scan_log(
                 "Ticker":
                     trade["Ticker"],
 
+                "Mode":
+                    trade["Mode"],
+
                 "Eligible":
                     trade["Eligible"],
 
@@ -1166,7 +1292,14 @@ def save_scan_log(
                     trade["RR"],
 
                 "VolumeRatio":
-                    trade["VolumeRatio"],
+                    trade[
+                        "VolumeRatio"
+                    ],
+
+                "RequiredVolumeRatio":
+                    trade[
+                        "RequiredVolumeRatio"
+                    ],
 
                 "EMA20":
                     trade["EMA20"],
@@ -1204,7 +1337,7 @@ def save_scan_log(
 
 
 # ============================================================
-# MAIN
+# MAIN BOT
 # ============================================================
 
 def run_bot():
@@ -1212,7 +1345,7 @@ def run_bot():
     now = get_new_york_time()
 
     print("======================")
-    print("PULLBACK BOT V2")
+    print("PULLBACK BOT V3")
     print("======================")
 
     print(
@@ -1224,7 +1357,7 @@ def run_bot():
 
 
     # ========================================================
-    # MARKET OPEN?
+    # MARKET HOURS
     # ========================================================
 
     if not market_is_open():
@@ -1236,16 +1369,51 @@ def run_bot():
 
 
     # ========================================================
-    # EARLY SESSION?
+    # DON'T EVALUATE BEFORE FIRST HOURLY CANDLE CLOSES
     # ========================================================
 
-    if not inside_trade_window():
+    if (
+        now.hour < 10
+        or
+        (
+            now.hour == 10
+            and
+            now.minute < 30
+        )
+    ):
 
         print("\nNO TRADE")
+
         print(
-            "Reason: Outside "
-            "10:00-11:00 AM ET "
-            "entry window."
+            "Waiting for first "
+            "9:30-10:30 candle "
+            "to complete."
+        )
+
+        return
+
+
+    # ========================================================
+    # STOP NEW TRADES AFTER SECONDARY WINDOW
+    # ========================================================
+
+    current_minutes = (
+        now.hour * 60
+        + now.minute
+    )
+
+    secondary_end = (
+        SECONDARY_END_HOUR * 60
+        + SECONDARY_END_MINUTE
+    )
+
+    if current_minutes > secondary_end:
+
+        print("\nNO TRADE")
+
+        print(
+            "Reason: New-entry window "
+            "has ended for today."
         )
 
         return
@@ -1275,7 +1443,7 @@ def run_bot():
 
 
     # ========================================================
-    # SCAN
+    # SCAN WATCHLIST
     # ========================================================
 
     for ticker in WATCHLIST:
@@ -1286,9 +1454,11 @@ def run_bot():
                 ticker
             )
 
-            results.append(
-                result
-            )
+            if result is not None:
+
+                results.append(
+                    result
+                )
 
         except Exception as error:
 
@@ -1302,14 +1472,14 @@ def run_bot():
     if not results:
 
         print(
-            "\nNo valid results."
+            "\nNo valid signal candidates."
         )
 
         return
 
 
     # ========================================================
-    # FIND ELIGIBLE SETUPS
+    # QUALIFYING TRADES
     # ========================================================
 
     eligible = [
@@ -1335,18 +1505,50 @@ def run_bot():
 
 
     # ========================================================
-    # RANK SETUPS
-    #
-    # Highest volume ratio first.
+    # PRIORITIZE PRIMARY MODE
     # ========================================================
 
-    eligible.sort(
+    primary_trades = [
+        trade
+        for trade in eligible
+        if trade["Mode"]
+        == "PRIMARY"
+    ]
+
+    secondary_trades = [
+        trade
+        for trade in eligible
+        if trade["Mode"]
+        == "SECONDARY"
+    ]
+
+
+    if primary_trades:
+
+        candidates = (
+            primary_trades
+        )
+
+    else:
+
+        candidates = (
+            secondary_trades
+        )
+
+
+    # ========================================================
+    # PICK STRONGEST RELATIVE VOLUME
+    # ========================================================
+
+    candidates.sort(
         key=lambda trade:
             trade["VolumeRatio"],
         reverse=True,
     )
 
-    best_trade = eligible[0]
+    best_trade = (
+        candidates[0]
+    )
 
 
     # ========================================================
@@ -1366,6 +1568,10 @@ def run_bot():
         return
 
 
+    # ========================================================
+    # FINAL RESULT
+    # ========================================================
+
     print("\n======================")
     print("QUALIFYING SETUP")
     print("======================")
@@ -1373,6 +1579,11 @@ def run_bot():
     print(
         "Ticker:",
         best_trade["Ticker"],
+    )
+
+    print(
+        "Mode:",
+        best_trade["Mode"],
     )
 
     print(
@@ -1397,13 +1608,15 @@ def run_bot():
 
 
     # ========================================================
-    # DUPLICATE CHECK
+    # DUPLICATE PROTECTION
     # ========================================================
 
-    if already_alerted(
+    duplicate = already_alerted(
         best_trade["Ticker"],
         best_trade["SignalID"],
-    ):
+    )
+
+    if duplicate:
 
         print(
             "Signal already alerted."
