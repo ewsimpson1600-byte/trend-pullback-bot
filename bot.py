@@ -1,6 +1,9 @@
 import yfinance as yf
 import pandas as pd
+
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
 
 # ==========================================
 # SETTINGS
@@ -26,10 +29,49 @@ PULLBACK_DISTANCE = 0.01
 
 
 # ==========================================
+# MARKET HOURS
+# ==========================================
+
+def market_is_open():
+
+    now_et = datetime.now(
+        ZoneInfo("America/New_York")
+    )
+
+    # Monday = 0, Friday = 4
+    if now_et.weekday() > 4:
+        return False
+
+    current_minutes = (
+        now_et.hour * 60
+        + now_et.minute
+    )
+
+    market_open = (
+        9 * 60
+        + 30
+    )
+
+    market_close = (
+        16 * 60
+    )
+
+    return (
+        market_open
+        <= current_minutes
+        < market_close
+    )
+
+
+# ==========================================
 # DOWNLOAD DATA
 # ==========================================
 
-def get_data(ticker, period="6mo", interval="1h"):
+def get_data(
+    ticker,
+    period="6mo",
+    interval="1h"
+):
 
     data = yf.download(
         ticker,
@@ -40,14 +82,26 @@ def get_data(ticker, period="6mo", interval="1h"):
     )
 
     if data.empty:
-        raise ValueError(f"No data returned for {ticker}")
+        raise ValueError(
+            f"No data returned for {ticker}"
+        )
 
     # Handle yfinance MultiIndex
-    if isinstance(data.columns, pd.MultiIndex):
+    if isinstance(
+        data.columns,
+        pd.MultiIndex
+    ):
         try:
-            data = data.xs(ticker, axis=1, level=1)
+            data = data.xs(
+                ticker,
+                axis=1,
+                level=1
+            )
         except Exception:
-            data.columns = data.columns.get_level_values(0)
+            data.columns = (
+                data.columns
+                .get_level_values(0)
+            )
 
     return data.dropna()
 
@@ -66,30 +120,69 @@ def market_regime_check():
 
     spy["EMA200"] = (
         spy["Close"]
-        .ewm(span=200, adjust=False)
+        .ewm(
+            span=200,
+            adjust=False
+        )
         .mean()
     )
 
-    price = float(spy["Close"].iloc[-1])
-    ema200 = float(spy["EMA200"].iloc[-1])
+    price = float(
+        spy["Close"].iloc[-1]
+    )
 
-    returns = spy["Close"].pct_change().dropna()
+    ema200 = float(
+        spy["EMA200"].iloc[-1]
+    )
 
-    volatility = float(returns.tail(20).std() * 100)
+    returns = (
+        spy["Close"]
+        .pct_change()
+        .dropna()
+    )
 
-    bullish = price > ema200
+    volatility = float(
+        returns.tail(20).std()
+        * 100
+    )
 
-    print("SPY:", round(price, 2))
-    print("EMA200:", round(ema200, 2))
-    print("Trend:", "BULLISH" if bullish else "BEARISH")
-    print("20-period volatility:", round(volatility, 3), "%")
+    bullish = (
+        price > ema200
+    )
 
-    # Long-only version of strategy
-    market_ok = bullish and volatility < 1.5
+    print(
+        "SPY:",
+        round(price, 2)
+    )
+
+    print(
+        "EMA200:",
+        round(ema200, 2)
+    )
+
+    print(
+        "Trend:",
+        "BULLISH"
+        if bullish
+        else "BEARISH"
+    )
+
+    print(
+        "20-period volatility:",
+        round(volatility, 3),
+        "%"
+    )
+
+    market_ok = (
+        bullish
+        and volatility < 1.5
+    )
 
     print(
         "Market Status:",
-        "ACCEPTABLE" if market_ok else "NO LONG TRADES"
+        "ACCEPTABLE"
+        if market_ok
+        else "NO LONG TRADES"
     )
 
     return market_ok
@@ -108,8 +201,13 @@ def get_spy_return():
     )
 
     return (
-        float(spy["Close"].iloc[-1])
-        / float(spy["Close"].iloc[0])
+        float(
+            spy["Close"].iloc[-1]
+        )
+        /
+        float(
+            spy["Close"].iloc[0]
+        )
     ) - 1
 
 
@@ -117,9 +215,15 @@ def get_spy_return():
 # STOCK SCANNER
 # ==========================================
 
-def scan_stock(ticker, spy_return):
+def scan_stock(
+    ticker,
+    spy_return
+):
 
-    print("Scanning:", ticker)
+    print(
+        "Scanning:",
+        ticker
+    )
 
     data = get_data(ticker)
 
@@ -128,16 +232,25 @@ def scan_stock(ticker, spy_return):
             f"Not enough data for {ticker}"
         )
 
+    # --------------------------
     # Indicators
+    # --------------------------
+
     data["EMA20"] = (
         data["Close"]
-        .ewm(span=20, adjust=False)
+        .ewm(
+            span=20,
+            adjust=False
+        )
         .mean()
     )
 
     data["EMA200"] = (
         data["Close"]
-        .ewm(span=200, adjust=False)
+        .ewm(
+            span=200,
+            adjust=False
+        )
         .mean()
     )
 
@@ -147,109 +260,193 @@ def scan_stock(ticker, spy_return):
         .mean()
     )
 
+    # --------------------------
     # ATR
-    previous_close = data["Close"].shift(1)
+    # --------------------------
+
+    previous_close = (
+        data["Close"]
+        .shift(1)
+    )
 
     tr = pd.concat(
         [
-            data["High"] - data["Low"],
-            (data["High"] - previous_close).abs(),
-            (data["Low"] - previous_close).abs()
+            (
+                data["High"]
+                - data["Low"]
+            ),
+            (
+                data["High"]
+                - previous_close
+            ).abs(),
+            (
+                data["Low"]
+                - previous_close
+            ).abs()
         ],
         axis=1
     ).max(axis=1)
 
-    data["ATR"] = tr.rolling(14).mean()
+    data["ATR"] = (
+        tr
+        .rolling(14)
+        .mean()
+    )
 
     current = data.iloc[-1]
     previous = data.iloc[-2]
 
-    price = float(current["Close"])
-    ema20 = float(current["EMA20"])
-    ema200 = float(current["EMA200"])
+    price = float(
+        current["Close"]
+    )
 
-    volume = float(current["Volume"])
-    avg_volume = float(current["AvgVolume"])
-    atr = float(current["ATR"])
+    ema20 = float(
+        current["EMA20"]
+    )
+
+    ema200 = float(
+        current["EMA200"]
+    )
+
+    volume = float(
+        current["Volume"]
+    )
+
+    avg_volume = float(
+        current["AvgVolume"]
+    )
+
+    atr = float(
+        current["ATR"]
+    )
 
     confidence = 0
     reasons = []
 
-    # --------------------------------------
-    # 1. TREND (+20)
-    # --------------------------------------
 
-    trend_pass = price > ema200
+    # ======================================
+    # 1. TREND (+20)
+    # ======================================
+
+    trend_pass = (
+        price > ema200
+    )
 
     if trend_pass:
         confidence += 20
-        reasons.append("Trend PASS")
+        reasons.append(
+            "Trend PASS"
+        )
     else:
-        reasons.append("Trend FAIL")
+        reasons.append(
+            "Trend FAIL"
+        )
 
-    # --------------------------------------
+
+    # ======================================
     # 2. PULLBACK (+20)
-    # --------------------------------------
+    # ======================================
 
-    pullback_distance = abs(
-        price - ema20
-    ) / price
+    pullback_distance = (
+        abs(
+            price - ema20
+        )
+        / price
+    )
 
     pullback_pass = (
-        pullback_distance <= PULLBACK_DISTANCE
+        pullback_distance
+        <= PULLBACK_DISTANCE
     )
 
     if pullback_pass:
         confidence += 20
-        reasons.append("Pullback PASS")
+        reasons.append(
+            "Pullback PASS"
+        )
     else:
-        reasons.append("Pullback FAIL")
+        reasons.append(
+            "Pullback FAIL"
+        )
 
-    # --------------------------------------
+
+    # ======================================
     # 3. VOLUME (+15)
-    # --------------------------------------
+    # ======================================
 
-    volume_pass = volume > avg_volume
+    volume_pass = (
+        volume > avg_volume
+    )
 
     if volume_pass:
         confidence += 15
-        reasons.append("Volume PASS")
+        reasons.append(
+            "Volume PASS"
+        )
     else:
-        reasons.append("Volume FAIL")
+        reasons.append(
+            "Volume FAIL"
+        )
 
-    # --------------------------------------
+
+    # ======================================
     # 4. REVERSAL (+15)
-    # --------------------------------------
+    # ======================================
 
     bullish_engulfing = (
-        current["Close"] > current["Open"]
-        and previous["Close"] < previous["Open"]
-        and current["Close"] > previous["Open"]
-        and current["Open"] <= previous["Close"]
+        current["Close"]
+        > current["Open"]
+        and
+        previous["Close"]
+        < previous["Open"]
+        and
+        current["Close"]
+        > previous["Open"]
+        and
+        current["Open"]
+        <= previous["Close"]
     )
 
     body = abs(
-        float(current["Close"])
-        - float(current["Open"])
+        float(
+            current["Close"]
+        )
+        -
+        float(
+            current["Open"]
+        )
     )
 
     lower_wick = (
         min(
-            float(current["Open"]),
-            float(current["Close"])
+            float(
+                current["Open"]
+            ),
+            float(
+                current["Close"]
+            )
         )
-        - float(current["Low"])
+        -
+        float(
+            current["Low"]
+        )
     )
 
     rejection_wick = (
-        current["Close"] > current["Open"]
-        and body > 0
-        and lower_wick >= body
+        current["Close"]
+        > current["Open"]
+        and
+        body > 0
+        and
+        lower_wick >= body
     )
 
     higher_low = (
-        current["Low"] > previous["Low"]
-        and current["Close"] > current["Open"]
+        current["Low"]
+        > previous["Low"]
+        and
+        current["Close"]
+        > current["Open"]
     )
 
     reversal_pass = (
@@ -260,53 +457,79 @@ def scan_stock(ticker, spy_return):
 
     if reversal_pass:
         confidence += 15
-        reasons.append("Reversal PASS")
+        reasons.append(
+            "Reversal PASS"
+        )
     else:
-        reasons.append("Reversal FAIL")
+        reasons.append(
+            "Reversal FAIL"
+        )
 
-    # --------------------------------------
+
+    # ======================================
     # 5. RELATIVE STRENGTH (+10)
-    # --------------------------------------
+    # ======================================
 
     stock_return = (
-        float(data["Close"].iloc[-1])
-        / float(data["Close"].iloc[0])
+        float(
+            data["Close"].iloc[-1]
+        )
+        /
+        float(
+            data["Close"].iloc[0]
+        )
     ) - 1
 
     relative_strength = (
-        stock_return - spy_return
+        stock_return
+        - spy_return
     )
 
-    rs_pass = relative_strength > 0
+    rs_pass = (
+        relative_strength > 0
+    )
 
     if rs_pass:
         confidence += 10
-        reasons.append("Relative Strength PASS")
+        reasons.append(
+            "Relative Strength PASS"
+        )
     else:
-        reasons.append("Relative Strength FAIL")
+        reasons.append(
+            "Relative Strength FAIL"
+        )
 
-    # --------------------------------------
+
+    # ======================================
     # TRADE PLAN
-    # --------------------------------------
+    # ======================================
 
     entry = price
 
-    # Stop 1 ATR below entry
-    stop = entry - atr
+    stop = (
+        entry
+        - atr
+    )
 
-    risk_per_share = entry - stop
+    risk_per_share = (
+        entry
+        - stop
+    )
 
-    # Minimum 2R target
-    target = entry + (risk_per_share * 2)
+    target = (
+        entry
+        + risk_per_share * 2
+    )
 
     rr = (
         (target - entry)
         / risk_per_share
     )
 
-    # --------------------------------------
+
+    # ======================================
     # REQUIRED CONDITIONS
-    # --------------------------------------
+    # ======================================
 
     required_conditions = (
         trend_pass
@@ -316,24 +539,61 @@ def scan_stock(ticker, spy_return):
     )
 
     eligible = (
-        confidence >= MIN_CONFIDENCE
-        and required_conditions
+        confidence
+        >= MIN_CONFIDENCE
+        and
+        required_conditions
     )
 
     return {
-        "Ticker": ticker,
-        "Score": confidence,
-        "Eligible": eligible,
-        "Entry": round(entry, 2),
-        "Stop": round(stop, 2),
-        "Target": round(target, 2),
-        "RR": round(rr, 2),
-        "ATR": round(atr, 2),
-        "RelativeStrength": round(
-            relative_strength * 100,
-            2
-        ),
-        "Reasons": reasons
+        "Ticker":
+            ticker,
+
+        "Score":
+            confidence,
+
+        "Eligible":
+            eligible,
+
+        "Entry":
+            round(
+                entry,
+                2
+            ),
+
+        "Stop":
+            round(
+                stop,
+                2
+            ),
+
+        "Target":
+            round(
+                target,
+                2
+            ),
+
+        "RR":
+            round(
+                rr,
+                2
+            ),
+
+        "ATR":
+            round(
+                atr,
+                2
+            ),
+
+        "RelativeStrength":
+            round(
+                relative_strength
+                * 100,
+                2
+            ),
+
+        "Reasons":
+            reasons
     }
 
 
@@ -346,7 +606,9 @@ def calculate_position(trade):
     entry = trade["Entry"]
     stop = trade["Stop"]
 
-    risk_per_share = entry - stop
+    risk_per_share = (
+        entry - stop
+    )
 
     if risk_per_share <= 0:
         return None
@@ -357,50 +619,92 @@ def calculate_position(trade):
     )
 
     shares_by_capital = (
-        capital_limit / entry
+        capital_limit
+        / entry
     )
 
-    # With a $20 account, capital is normally
-    # the binding constraint.
-    position_size = shares_by_capital
+    position_size = (
+        shares_by_capital
+    )
 
     capital_used = (
-        position_size * entry
+        position_size
+        * entry
     )
 
     maximum_loss = (
-        position_size * risk_per_share
+        position_size
+        * risk_per_share
     )
 
     return {
-        "Shares": round(position_size, 6),
-        "Capital": round(capital_used, 2),
-        "MaximumLoss": round(maximum_loss, 2)
+        "Shares":
+            round(
+                position_size,
+                6
+            ),
+
+        "Capital":
+            round(
+                capital_used,
+                2
+            ),
+
+        "MaximumLoss":
+            round(
+                maximum_loss,
+                2
+            )
     }
 
 
 # ==========================================
-# OUTPUT / LOGGING
+# OUTPUT
 # ==========================================
 
-def print_trade(trade, position):
+def print_trade(
+    trade,
+    position
+):
 
     print("\n======================")
     print("TRADE CANDIDATE")
     print("======================")
 
-    print("Ticker:", trade["Ticker"])
-    print("Direction: LONG")
+    print(
+        "Ticker:",
+        trade["Ticker"]
+    )
+
+    print(
+        "Direction: LONG"
+    )
+
     print(
         "Confidence:",
         trade["Score"],
         "/80"
     )
 
-    print("Entry:", trade["Entry"])
-    print("Stop:", trade["Stop"])
-    print("Target:", trade["Target"])
-    print("Risk/Reward:", trade["RR"])
+    print(
+        "Entry:",
+        trade["Entry"]
+    )
+
+    print(
+        "Stop:",
+        trade["Stop"]
+    )
+
+    print(
+        "Target:",
+        trade["Target"]
+    )
+
+    print(
+        "Risk/Reward:",
+        trade["RR"]
+    )
 
     print(
         "Relative Strength:",
@@ -427,14 +731,27 @@ def print_trade(trade, position):
     print("\nConditions:")
 
     for reason in trade["Reasons"]:
-        print("-", reason)
+        print(
+            "-",
+            reason
+        )
 
 
-def save_run_log(results, best_trade=None):
+# ==========================================
+# LOGGING
+# ==========================================
 
-    timestamp = datetime.now(
-        timezone.utc
-    ).isoformat()
+def save_run_log(
+    results,
+    best_trade=None
+):
+
+    timestamp = (
+        datetime.now(
+            timezone.utc
+        )
+        .isoformat()
+    )
 
     rows = []
 
@@ -442,30 +759,57 @@ def save_run_log(results, best_trade=None):
 
         rows.append(
             {
-                "TimeUTC": timestamp,
-                "Ticker": trade["Ticker"],
-                "Score": trade["Score"],
-                "Eligible": trade["Eligible"],
-                "Entry": trade["Entry"],
-                "Stop": trade["Stop"],
-                "Target": trade["Target"],
-                "RR": trade["RR"],
+                "TimeUTC":
+                    timestamp,
+
+                "Ticker":
+                    trade["Ticker"],
+
+                "Score":
+                    trade["Score"],
+
+                "Eligible":
+                    trade["Eligible"],
+
+                "Entry":
+                    trade["Entry"],
+
+                "Stop":
+                    trade["Stop"],
+
+                "Target":
+                    trade["Target"],
+
+                "RR":
+                    trade["RR"],
+
                 "RelativeStrength":
-                    trade["RelativeStrength"],
+                    trade[
+                        "RelativeStrength"
+                    ],
+
                 "Selected":
-                    best_trade is not None
-                    and trade["Ticker"]
-                    == best_trade["Ticker"]
+                    (
+                        best_trade
+                        is not None
+                        and
+                        trade["Ticker"]
+                        ==
+                        best_trade["Ticker"]
+                    )
             }
         )
 
-    pd.DataFrame(rows).to_csv(
+    pd.DataFrame(
+        rows
+    ).to_csv(
         "latest_scan.csv",
         index=False
     )
 
     print(
-        "\nLatest scan saved to latest_scan.csv"
+        "\nLatest scan saved "
+        "to latest_scan.csv"
     )
 
 
@@ -475,32 +819,84 @@ def save_run_log(results, best_trade=None):
 
 def run_bot():
 
+    now_et = datetime.now(
+        ZoneInfo(
+            "America/New_York"
+        )
+    )
+
     print("======================")
     print("TREND PULLBACK BOT")
     print("======================")
 
     print(
-        "UTC:",
-        datetime.now(timezone.utc)
+        "New York time:",
+        now_et.strftime(
+            "%Y-%m-%d %H:%M:%S %Z"
+        )
     )
 
-    # Market filter
-    if not market_regime_check():
+    print(
+        "UTC:",
+        datetime.now(
+            timezone.utc
+        )
+    )
 
-        print("\nFINAL DECISION: NO TRADE")
+    # --------------------------------------
+    # MARKET HOURS CHECK
+    # --------------------------------------
+
+    if not market_is_open():
+
         print(
-            "Reason: Market regime rejected "
-            "long setups."
+            "\nMARKET CLOSED"
+        )
+
+        print(
+            "Scanner exiting."
         )
 
         return
 
-    print("\nMarket approved.")
-    print("Scanning watchlist...\n")
 
-    spy_return = get_spy_return()
+    # --------------------------------------
+    # MARKET REGIME FILTER
+    # --------------------------------------
+
+    if not market_regime_check():
+
+        print(
+            "\nFINAL DECISION: "
+            "NO TRADE"
+        )
+
+        print(
+            "Reason: Market regime "
+            "rejected long setups."
+        )
+
+        return
+
+
+    print(
+        "\nMarket approved."
+    )
+
+    print(
+        "Scanning watchlist...\n"
+    )
+
+    spy_return = (
+        get_spy_return()
+    )
 
     results = []
+
+
+    # --------------------------------------
+    # SCAN WATCHLIST
+    # --------------------------------------
 
     for ticker in WATCHLIST:
 
@@ -511,7 +907,9 @@ def run_bot():
                 spy_return
             )
 
-            results.append(result)
+            results.append(
+                result
+            )
 
             print(
                 ticker,
@@ -529,27 +927,49 @@ def run_bot():
                 error
             )
 
-    # Rank highest confidence first
+
+    # --------------------------------------
+    # RANK RESULTS
+    # --------------------------------------
+
     results.sort(
-        key=lambda x: x["Score"],
+        key=lambda x:
+            x["Score"],
         reverse=True
     )
 
     eligible = [
         trade
-        for trade in results
+        for trade
+        in results
         if trade["Eligible"]
     ]
 
+
+    # --------------------------------------
+    # NO TRADE
+    # --------------------------------------
+
     if not eligible:
 
-        print("\n======================")
-        print("FINAL DECISION")
-        print("======================")
+        print(
+            "\n======================"
+        )
 
-        print("NO TRADE")
+        print(
+            "FINAL DECISION"
+        )
+
+        print(
+            "======================"
+        )
+
+        print(
+            "NO TRADE"
+        )
 
         if results:
+
             print(
                 "Best setup:",
                 results[0]["Ticker"]
@@ -561,15 +981,25 @@ def run_bot():
                 "/80"
             )
 
-        save_run_log(results)
+        save_run_log(
+            results
+        )
 
         return
 
-    # Highest-scoring valid setup
-    best_trade = eligible[0]
 
-    position = calculate_position(
-        best_trade
+    # --------------------------------------
+    # BEST TRADE
+    # --------------------------------------
+
+    best_trade = (
+        eligible[0]
+    )
+
+    position = (
+        calculate_position(
+            best_trade
+        )
     )
 
     print_trade(
@@ -584,7 +1014,7 @@ def run_bot():
 
 
 # ==========================================
-# START
+# START BOT
 # ==========================================
 
 if __name__ == "__main__":
