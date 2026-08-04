@@ -25,12 +25,27 @@ WATCHLIST = [
 ACCOUNT_BALANCE = 20.00
 MAX_CAPITAL_PER_TRADE = 20.00
 
-MIN_CONFIDENCE = 70
+# Only look for new entries during the early-session window.
+TRADE_WINDOW_START_HOUR = 10
+TRADE_WINDOW_START_MINUTE = 0
 
-# Price must be within 1% of EMA20
-PULLBACK_DISTANCE = 0.01
+TRADE_WINDOW_END_HOUR = 11
+TRADE_WINDOW_END_MINUTE = 0
 
-# State file restored/saved by GitHub Actions
+# Volume must be at least this multiple of its 20-hour average.
+MIN_VOLUME_RATIO = 1.0
+
+# Price must come within this many ATRs of EMA20.
+MAX_EMA_DISTANCE_ATR = 0.50
+
+# Risk management
+STOP_ATR_MULTIPLIER = 1.0
+TARGET_ATR_MULTIPLIER = 1.5
+
+# We have NOT validated VWAP enough yet.
+# Leave False until we backtest it properly.
+REQUIRE_VWAP = False
+
 STATE_FILE = ".bot_state/alert_state.json"
 
 
@@ -47,6 +62,7 @@ def send_discord_message(message):
         return False
 
     try:
+
         response = requests.post(
             webhook_url,
             json={
@@ -61,18 +77,21 @@ def send_discord_message(message):
         response.raise_for_status()
 
         print("Discord notification sent.")
+
         return True
 
     except Exception as error:
+
         print(
             "Discord notification failed:",
             error,
         )
+
         return False
 
 
 # ============================================================
-# DUPLICATE ALERT STATE
+# STATE / DUPLICATE PROTECTION
 # ============================================================
 
 def load_alert_state():
@@ -81,18 +100,22 @@ def load_alert_state():
         return {}
 
     try:
+
         with open(
             STATE_FILE,
             "r",
             encoding="utf-8",
         ) as file:
+
             return json.load(file)
 
     except Exception as error:
+
         print(
-            "Could not load alert state:",
+            "Could not load state:",
             error,
         )
+
         return {}
 
 
@@ -108,6 +131,7 @@ def save_alert_state(state):
         "w",
         encoding="utf-8",
     ) as file:
+
         json.dump(
             state,
             file,
@@ -117,52 +141,57 @@ def save_alert_state(state):
 
 def already_alerted(
     ticker,
-    candle_id,
+    signal_id,
 ):
 
     state = load_alert_state()
 
     return (
         state.get(ticker)
-        == candle_id
+        == signal_id
     )
 
 
 def mark_alerted(
     ticker,
-    candle_id,
+    signal_id,
 ):
 
     state = load_alert_state()
 
-    state[ticker] = candle_id
+    state[ticker] = signal_id
 
     save_alert_state(state)
 
     print(
-        f"Saved alert state: "
-        f"{ticker} / {candle_id}"
+        f"Saved signal state: "
+        f"{ticker} / {signal_id}"
     )
 
 
 # ============================================================
-# MARKET HOURS
+# TIME CHECKS
 # ============================================================
+
+def get_new_york_time():
+
+    return datetime.now(
+        ZoneInfo(
+            "America/New_York"
+        )
+    )
+
 
 def market_is_open():
 
-    now_et = datetime.now(
-        ZoneInfo("America/New_York")
-    )
+    now = get_new_york_time()
 
-    # Monday = 0
-    # Friday = 4
-    if now_et.weekday() > 4:
+    if now.weekday() > 4:
         return False
 
-    current_minutes = (
-        now_et.hour * 60
-        + now_et.minute
+    minutes = (
+        now.hour * 60
+        + now.minute
     )
 
     market_open = (
@@ -176,40 +205,69 @@ def market_is_open():
 
     return (
         market_open
-        <= current_minutes
+        <= minutes
         < market_close
     )
 
 
+def inside_trade_window():
+
+    now = get_new_york_time()
+
+    current_minutes = (
+        now.hour * 60
+        + now.minute
+    )
+
+    start_minutes = (
+        TRADE_WINDOW_START_HOUR * 60
+        + TRADE_WINDOW_START_MINUTE
+    )
+
+    end_minutes = (
+        TRADE_WINDOW_END_HOUR * 60
+        + TRADE_WINDOW_END_MINUTE
+    )
+
+    return (
+        start_minutes
+        <= current_minutes
+        <= end_minutes
+    )
+
+
 # ============================================================
-# DOWNLOAD DATA
+# DATA
 # ============================================================
 
-def get_data(
+def download_5m_data(
     ticker,
-    period="6mo",
-    interval="1h",
+    period="30d",
 ):
 
     data = yf.download(
         ticker,
         period=period,
-        interval=interval,
+        interval="5m",
         auto_adjust=False,
+        prepost=False,
         progress=False,
     )
 
     if data.empty:
+
         raise ValueError(
             f"No data returned for {ticker}"
         )
 
-    # Flatten yfinance MultiIndex
+    # Fix MultiIndex from yfinance
     if isinstance(
         data.columns,
         pd.MultiIndex,
     ):
+
         try:
+
             data = data.xs(
                 ticker,
                 axis=1,
@@ -217,28 +275,112 @@ def get_data(
             )
 
         except Exception:
+
             data.columns = (
                 data.columns
                 .get_level_values(0)
             )
 
-    return data.dropna()
+    required_columns = [
+        "Open",
+        "High",
+        "Low",
+        "Close",
+        "Volume",
+    ]
+
+    data = data[
+        required_columns
+    ].copy()
+
+    data = data.dropna()
+
+    # Convert timestamps to New York time
+    if data.index.tz is None:
+
+        data.index = (
+            data.index
+            .tz_localize("UTC")
+        )
+
+    data.index = (
+        data.index
+        .tz_convert(
+            "America/New_York"
+        )
+    )
+
+    return data
 
 
 # ============================================================
-# MARKET REGIME
+# BUILD HOURLY BARS FROM 5-MINUTE DATA
 # ============================================================
 
-def market_regime_check():
+def build_hourly_bars(data):
 
-    print("\n======================")
-    print("MARKET REGIME")
-    print("======================")
+    # Force 60-minute candles aligned to 9:30 ET.
+    hourly = data.resample(
+        "60min",
+        origin="start_day",
+        offset="30min",
+        label="left",
+        closed="left",
+    ).agg(
+        {
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+            "Volume": "sum",
+        }
+    )
 
-    spy = get_data("SPY")
+    hourly = hourly.dropna()
 
-    spy["EMA200"] = (
-        spy["Close"]
+    # Keep normal session-aligned bars only.
+    hourly = hourly[
+        (
+            hourly.index.hour > 9
+        )
+        |
+        (
+            (
+                hourly.index.hour == 9
+            )
+            &
+            (
+                hourly.index.minute >= 30
+            )
+        )
+    ]
+
+    hourly = hourly[
+        hourly.index.hour < 16
+    ]
+
+    return hourly
+
+
+# ============================================================
+# INDICATORS
+# ============================================================
+
+def calculate_indicators(hourly):
+
+    hourly = hourly.copy()
+
+    hourly["EMA20"] = (
+        hourly["Close"]
+        .ewm(
+            span=20,
+            adjust=False,
+        )
+        .mean()
+    )
+
+    hourly["EMA200"] = (
+        hourly["Close"]
         .ewm(
             span=200,
             adjust=False,
@@ -246,16 +388,133 @@ def market_regime_check():
         .mean()
     )
 
+    hourly["AvgVolume20"] = (
+        hourly["Volume"]
+        .rolling(20)
+        .mean()
+    )
+
+    previous_close = (
+        hourly["Close"]
+        .shift(1)
+    )
+
+    true_range = pd.concat(
+        [
+            hourly["High"]
+            - hourly["Low"],
+
+            (
+                hourly["High"]
+                - previous_close
+            ).abs(),
+
+            (
+                hourly["Low"]
+                - previous_close
+            ).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    hourly["ATR14"] = (
+        true_range
+        .rolling(14)
+        .mean()
+    )
+
+    return hourly
+
+
+# ============================================================
+# CURRENT-DAY VWAP
+# ============================================================
+
+def calculate_current_vwap(
+    data,
+):
+
+    today = get_new_york_time().date()
+
+    today_data = data[
+        data.index.date == today
+    ].copy()
+
+    if today_data.empty:
+        return None
+
+    typical_price = (
+        today_data["High"]
+        + today_data["Low"]
+        + today_data["Close"]
+    ) / 3
+
+    cumulative_value = (
+        typical_price
+        * today_data["Volume"]
+    ).cumsum()
+
+    cumulative_volume = (
+        today_data["Volume"]
+        .cumsum()
+    )
+
+    vwap = (
+        cumulative_value
+        / cumulative_volume
+    )
+
+    return float(
+        vwap.iloc[-1]
+    )
+
+
+# ============================================================
+# MARKET REGIME
+# ============================================================
+
+def market_regime():
+
+    print("\n======================")
+    print("MARKET REGIME")
+    print("======================")
+
+    spy_5m = download_5m_data(
+        "SPY"
+    )
+
+    spy_hourly = (
+        build_hourly_bars(
+            spy_5m
+        )
+    )
+
+    spy_hourly = (
+        calculate_indicators(
+            spy_hourly
+        )
+    )
+
+    if len(spy_hourly) < 200:
+
+        print(
+            "Not enough SPY history."
+        )
+
+        return False
+
+    current = spy_hourly.iloc[-1]
+
     price = float(
-        spy["Close"].iloc[-1]
+        current["Close"]
     )
 
     ema200 = float(
-        spy["EMA200"].iloc[-1]
+        current["EMA200"]
     )
 
     returns = (
-        spy["Close"]
+        spy_hourly["Close"]
         .pct_change()
         .dropna()
     )
@@ -269,6 +528,10 @@ def market_regime_check():
 
     bullish = (
         price > ema200
+    )
+
+    volatility_ok = (
+        volatility < 1.5
     )
 
     print(
@@ -289,382 +552,374 @@ def market_regime_check():
     )
 
     print(
-        "20-period volatility:",
-        round(volatility, 3),
+        "20-hour volatility:",
+        round(
+            volatility,
+            3,
+        ),
         "%",
     )
 
-    market_ok = (
+    approved = (
         bullish
-        and volatility < 1.5
+        and volatility_ok
     )
 
     print(
-        "Market Status:",
-        "ACCEPTABLE"
-        if market_ok
-        else "NO LONG TRADES",
+        "Market:",
+        "APPROVED"
+        if approved
+        else "REJECTED",
     )
 
-    return market_ok
+    return approved
 
 
 # ============================================================
-# SPY BENCHMARK
+# SCAN ONE TICKER
 # ============================================================
 
-def get_spy_return():
-
-    spy = get_data(
-        "SPY",
-        period="1mo",
-        interval="1h",
-    )
-
-    return (
-        float(
-            spy["Close"].iloc[-1]
-        )
-        /
-        float(
-            spy["Close"].iloc[0]
-        )
-    ) - 1
-
-
-# ============================================================
-# SCANNER
-# ============================================================
-
-def scan_stock(
-    ticker,
-    spy_return,
-):
+def scan_ticker(ticker):
 
     print(
-        "\nScanning:",
+        "\n----------------------"
+    )
+
+    print(
+        "Scanning:",
         ticker,
     )
 
-    data = get_data(ticker)
+    data_5m = download_5m_data(
+        ticker
+    )
 
-    if len(data) < 201:
+    hourly = build_hourly_bars(
+        data_5m
+    )
+
+    hourly = calculate_indicators(
+        hourly
+    )
+
+    if len(hourly) < 200:
+
         raise ValueError(
-            f"Not enough data for {ticker}"
+            f"Not enough hourly data for {ticker}"
         )
 
-    # --------------------------------------------------------
-    # INDICATORS
-    # --------------------------------------------------------
+    # ========================================================
+    # IMPORTANT:
+    # Use the last FULLY COMPLETED hourly candle.
+    # ========================================================
 
-    data["EMA20"] = (
-        data["Close"]
-        .ewm(
-            span=20,
-            adjust=False,
+    now = get_new_york_time()
+
+    current_hour_start = (
+        now.replace(
+            minute=30
+            if now.minute >= 30
+            else 30,
+            second=0,
+            microsecond=0,
         )
-        .mean()
     )
 
-    data["EMA200"] = (
-        data["Close"]
-        .ewm(
-            span=200,
-            adjust=False,
+    # Safer method:
+    # remove the current incomplete bar
+    completed = hourly[
+        hourly.index
+        + pd.Timedelta(hours=1)
+        <= now
+    ]
+
+    if completed.empty:
+
+        raise ValueError(
+            f"No completed hourly bar for {ticker}"
         )
-        .mean()
+
+    signal = completed.iloc[-1]
+
+    signal_time = (
+        completed.index[-1]
     )
 
-    data["AvgVolume"] = (
-        data["Volume"]
-        .rolling(20)
-        .mean()
+    close = float(
+        signal["Close"]
     )
 
-    previous_close = (
-        data["Close"]
-        .shift(1)
+    low = float(
+        signal["Low"]
     )
 
-    true_range = pd.concat(
-        [
-            data["High"]
-            - data["Low"],
-
-            (
-                data["High"]
-                - previous_close
-            ).abs(),
-
-            (
-                data["Low"]
-                - previous_close
-            ).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-
-    data["ATR"] = (
-        true_range
-        .rolling(14)
-        .mean()
-    )
-
-    current = data.iloc[-1]
-    previous = data.iloc[-2]
-
-    price = float(
-        current["Close"]
+    high = float(
+        signal["High"]
     )
 
     ema20 = float(
-        current["EMA20"]
+        signal["EMA20"]
     )
 
     ema200 = float(
-        current["EMA200"]
-    )
-
-    volume = float(
-        current["Volume"]
-    )
-
-    avg_volume = float(
-        current["AvgVolume"]
+        signal["EMA200"]
     )
 
     atr = float(
-        current["ATR"]
+        signal["ATR14"]
     )
 
-    if pd.isna(atr):
+    volume = float(
+        signal["Volume"]
+    )
+
+    avg_volume = float(
+        signal["AvgVolume20"]
+    )
+
+    if (
+        pd.isna(atr)
+        or pd.isna(avg_volume)
+        or atr <= 0
+        or avg_volume <= 0
+    ):
+
         raise ValueError(
-            f"ATR unavailable for {ticker}"
+            f"Indicators unavailable for {ticker}"
         )
 
-    confidence = 0
-    reasons = []
 
-
-    # --------------------------------------------------------
-    # 1. TREND +20
-    # --------------------------------------------------------
+    # ========================================================
+    # CONDITION 1: LONG-TERM TREND
+    # ========================================================
 
     trend_pass = (
-        price > ema200
+        close > ema200
     )
 
-    if trend_pass:
-        confidence += 20
-        reasons.append(
-            "Trend PASS"
-        )
-    else:
-        reasons.append(
-            "Trend FAIL"
-        )
 
+    # ========================================================
+    # CONDITION 2: RELATIVE VOLUME
+    # ========================================================
 
-    # --------------------------------------------------------
-    # 2. PULLBACK +20
-    # --------------------------------------------------------
-
-    pullback_distance = (
-        abs(
-            price - ema20
-        )
-        / price
+    volume_ratio = (
+        volume
+        / avg_volume
     )
-
-    pullback_pass = (
-        pullback_distance
-        <= PULLBACK_DISTANCE
-    )
-
-    if pullback_pass:
-        confidence += 20
-        reasons.append(
-            "Pullback PASS"
-        )
-    else:
-        reasons.append(
-            "Pullback FAIL"
-        )
-
-
-    # --------------------------------------------------------
-    # 3. VOLUME +15
-    # --------------------------------------------------------
 
     volume_pass = (
-        volume > avg_volume
+        volume_ratio
+        >= MIN_VOLUME_RATIO
     )
 
-    if volume_pass:
-        confidence += 15
-        reasons.append(
-            "Volume PASS"
-        )
+
+    # ========================================================
+    # CONDITION 3: EMA20 PULLBACK / RECLAIM
+    # ========================================================
+
+    distance_to_ema = abs(
+        close - ema20
+    )
+
+    distance_atr = (
+        distance_to_ema
+        / atr
+    )
+
+    near_ema = (
+        distance_atr
+        <= MAX_EMA_DISTANCE_ATR
+    )
+
+    touched_ema = (
+        low <= ema20
+    )
+
+    reclaimed_ema = (
+        touched_ema
+        and close > ema20
+    )
+
+    ema_pass = (
+        near_ema
+        and reclaimed_ema
+    )
+
+
+    # ========================================================
+    # CONDITION 4: VWAP
+    # ========================================================
+
+    vwap = calculate_current_vwap(
+        data_5m
+    )
+
+    if vwap is None:
+
+        vwap_pass = True
+
     else:
-        reasons.append(
-            "Volume FAIL"
+
+        vwap_pass = (
+            close > vwap
         )
 
 
-    # --------------------------------------------------------
-    # 4. REVERSAL +15
-    # --------------------------------------------------------
+    # ========================================================
+    # FINAL ELIGIBILITY
+    # ========================================================
 
-    bullish_engulfing = (
-        current["Close"]
-        > current["Open"]
-        and
-        previous["Close"]
-        < previous["Open"]
-        and
-        current["Close"]
-        > previous["Open"]
-        and
-        current["Open"]
-        <= previous["Close"]
-    )
+    if REQUIRE_VWAP:
 
-    body = abs(
-        float(current["Close"])
-        - float(current["Open"])
-    )
-
-    lower_wick = (
-        min(
-            float(current["Open"]),
-            float(current["Close"]),
+        eligible = (
+            trend_pass
+            and volume_pass
+            and ema_pass
+            and vwap_pass
         )
-        - float(current["Low"])
-    )
 
-    rejection_wick = (
-        current["Close"]
-        > current["Open"]
-        and
-        body > 0
-        and
-        lower_wick >= body
-    )
-
-    higher_low = (
-        current["Low"]
-        > previous["Low"]
-        and
-        current["Close"]
-        > current["Open"]
-    )
-
-    reversal_pass = (
-        bullish_engulfing
-        or rejection_wick
-        or higher_low
-    )
-
-    if reversal_pass:
-        confidence += 15
-        reasons.append(
-            "Reversal PASS"
-        )
     else:
-        reasons.append(
-            "Reversal FAIL"
+
+        eligible = (
+            trend_pass
+            and volume_pass
+            and ema_pass
         )
 
 
-    # --------------------------------------------------------
-    # 5. RELATIVE STRENGTH +10
-    # --------------------------------------------------------
+    # ========================================================
+    # LIVE PRICE
+    # ========================================================
 
-    stock_return = (
-        float(
-            data["Close"].iloc[-1]
-        )
-        /
-        float(
-            data["Close"].iloc[0]
-        )
-    ) - 1
-
-    relative_strength = (
-        stock_return
-        - spy_return
+    live_price = float(
+        data_5m["Close"].iloc[-1]
     )
 
-    rs_pass = (
-        relative_strength > 0
-    )
 
-    if rs_pass:
-        confidence += 10
-        reasons.append(
-            "Relative Strength PASS"
-        )
-    else:
-        reasons.append(
-            "Relative Strength FAIL"
-        )
-
-
-    # --------------------------------------------------------
+    # ========================================================
     # TRADE PLAN
-    # --------------------------------------------------------
+    # ========================================================
 
-    entry = price
+    entry = live_price
 
     stop = (
-        entry - atr
+        entry
+        - atr
+        * STOP_ATR_MULTIPLIER
     )
-
-    risk_per_share = (
-        entry - stop
-    )
-
-    if risk_per_share <= 0:
-        raise ValueError(
-            f"Invalid risk calculation for {ticker}"
-        )
 
     target = (
         entry
-        + risk_per_share * 2
+        + atr
+        * TARGET_ATR_MULTIPLIER
+    )
+
+    risk = (
+        entry - stop
+    )
+
+    reward = (
+        target - entry
     )
 
     rr = (
-        (target - entry)
-        / risk_per_share
+        reward / risk
+        if risk > 0
+        else 0
     )
 
 
-    # --------------------------------------------------------
-    # REQUIRED CONDITIONS
-    # --------------------------------------------------------
+    # ========================================================
+    # SIGNAL ID
+    # ========================================================
 
-    required_conditions = (
-        trend_pass
-        and pullback_pass
-        and reversal_pass
-        and rr >= 2
-    )
-
-    eligible = (
-        confidence
-        >= MIN_CONFIDENCE
-        and required_conditions
+    signal_id = (
+        f"{ticker}_"
+        f"{signal_time.isoformat()}"
     )
 
 
-    # Hourly candle identifier
-    candle_timestamp = (
-        data.index[-1]
+    print(
+        "Signal candle:",
+        signal_time,
     )
 
-    candle_id = str(
-        candle_timestamp
+    print(
+        "Trend:",
+        "PASS"
+        if trend_pass
+        else "FAIL",
+    )
+
+    print(
+        "Volume ratio:",
+        round(
+            volume_ratio,
+            2,
+        ),
+        "x",
+    )
+
+    print(
+        "Volume:",
+        "PASS"
+        if volume_pass
+        else "FAIL",
+    )
+
+    print(
+        "EMA20:",
+        round(
+            ema20,
+            2,
+        ),
+    )
+
+    print(
+        "ATR:",
+        round(
+            atr,
+            2,
+        ),
+    )
+
+    print(
+        "EMA distance:",
+        round(
+            distance_atr,
+            2,
+        ),
+        "ATR",
+    )
+
+    print(
+        "EMA touched:",
+        touched_ema,
+    )
+
+    print(
+        "EMA reclaim:",
+        reclaimed_ema,
+    )
+
+    if vwap is not None:
+
+        print(
+            "VWAP:",
+            round(
+                vwap,
+                2,
+            ),
+        )
+
+        print(
+            "Above VWAP:",
+            vwap_pass,
+        )
+
+    print(
+        "ELIGIBLE:",
+        eligible,
     )
 
 
@@ -672,11 +927,14 @@ def scan_stock(
         "Ticker":
             ticker,
 
-        "Score":
-            confidence,
-
         "Eligible":
             eligible,
+
+        "SignalTime":
+            str(signal_time),
+
+        "SignalID":
+            signal_id,
 
         "Entry":
             round(
@@ -708,18 +966,44 @@ def scan_stock(
                 2,
             ),
 
-        "RelativeStrength":
+        "EMA20":
             round(
-                relative_strength
-                * 100,
+                ema20,
                 2,
             ),
 
-        "CandleID":
-            candle_id,
+        "EMA200":
+            round(
+                ema200,
+                2,
+            ),
 
-        "Reasons":
-            reasons,
+        "VolumeRatio":
+            round(
+                volume_ratio,
+                2,
+            ),
+
+        "VWAP":
+            round(
+                vwap,
+                2,
+            )
+            if vwap
+            is not None
+            else None,
+
+        "TrendPass":
+            trend_pass,
+
+        "VolumePass":
+            volume_pass,
+
+        "EMAPass":
+            ema_pass,
+
+        "VWAPPass":
+            vwap_pass,
     }
 
 
@@ -727,9 +1011,12 @@ def scan_stock(
 # POSITION SIZING
 # ============================================================
 
-def calculate_position(trade):
+def calculate_position(
+    trade,
+):
 
     entry = trade["Entry"]
+
     stop = trade["Stop"]
 
     risk_per_share = (
@@ -737,21 +1024,17 @@ def calculate_position(trade):
     )
 
     if risk_per_share <= 0:
+
         return None
 
-    capital_limit = min(
+    capital = min(
         ACCOUNT_BALANCE,
         MAX_CAPITAL_PER_TRADE,
     )
 
     shares = (
-        capital_limit
+        capital
         / entry
-    )
-
-    capital_used = (
-        shares
-        * entry
     )
 
     maximum_loss = (
@@ -768,7 +1051,8 @@ def calculate_position(trade):
 
         "Capital":
             round(
-                capital_used,
+                shares
+                * entry,
                 2,
             ),
 
@@ -781,7 +1065,7 @@ def calculate_position(trade):
 
 
 # ============================================================
-# DISCORD TRADE ALERT
+# DISCORD ALERT
 # ============================================================
 
 def send_trade_alert(
@@ -789,20 +1073,32 @@ def send_trade_alert(
     position,
 ):
 
+    vwap_text = (
+        f"${trade['VWAP']:.2f}"
+        if trade["VWAP"]
+        is not None
+        else "N/A"
+    )
+
     message = (
-        "🚨 **TREND PULLBACK SIGNAL**\n\n"
+        "🚨 **EARLY SESSION PULLBACK SIGNAL**\n\n"
 
         f"**Ticker:** {trade['Ticker']}\n"
-        f"**Direction:** LONG\n"
-        f"**Confidence:** {trade['Score']}/80\n\n"
+        f"**Direction:** LONG\n\n"
 
         f"**Entry:** ${trade['Entry']:.2f}\n"
         f"**Stop:** ${trade['Stop']:.2f}\n"
         f"**Target:** ${trade['Target']:.2f}\n"
-        f"**Risk/Reward:** {trade['RR']:.2f}:1\n\n"
+        f"**R/R:** {trade['RR']:.2f}:1\n\n"
 
-        f"**Relative Strength:** "
-        f"{trade['RelativeStrength']:.2f}%\n"
+        f"**EMA20:** ${trade['EMA20']:.2f}\n"
+        f"**EMA200:** ${trade['EMA200']:.2f}\n"
+        f"**VWAP:** {vwap_text}\n"
+
+        f"**Relative volume:** "
+        f"{trade['VolumeRatio']:.2f}x\n"
+
+        f"**ATR:** ${trade['ATR']:.2f}\n\n"
 
         f"**Position:** "
         f"{position['Shares']} shares\n"
@@ -814,7 +1110,7 @@ def send_trade_alert(
         f"${position['MaximumLoss']:.2f}\n\n"
 
         f"**Signal candle:** "
-        f"{trade['CandleID']}"
+        f"{trade['SignalTime']}"
     )
 
     return send_discord_message(
@@ -823,12 +1119,11 @@ def send_trade_alert(
 
 
 # ============================================================
-# LOGGING
+# LOG RESULTS
 # ============================================================
 
-def save_run_log(
+def save_scan_log(
     results,
-    best_trade=None,
 ):
 
     os.makedirs(
@@ -855,9 +1150,6 @@ def save_run_log(
                 "Ticker":
                     trade["Ticker"],
 
-                "Score":
-                    trade["Score"],
-
                 "Eligible":
                     trade["Eligible"],
 
@@ -873,23 +1165,29 @@ def save_run_log(
                 "RR":
                     trade["RR"],
 
-                "RelativeStrength":
-                    trade[
-                        "RelativeStrength"
-                    ],
+                "VolumeRatio":
+                    trade["VolumeRatio"],
 
-                "CandleID":
-                    trade["CandleID"],
+                "EMA20":
+                    trade["EMA20"],
 
-                "Selected":
-                    (
-                        best_trade
-                        is not None
-                        and
-                        trade["Ticker"]
-                        ==
-                        best_trade["Ticker"]
-                    ),
+                "EMA200":
+                    trade["EMA200"],
+
+                "VWAP":
+                    trade["VWAP"],
+
+                "TrendPass":
+                    trade["TrendPass"],
+
+                "VolumePass":
+                    trade["VolumePass"],
+
+                "EMAPass":
+                    trade["EMAPass"],
+
+                "VWAPPass":
+                    trade["VWAPPass"],
             }
         )
 
@@ -901,36 +1199,33 @@ def save_run_log(
     )
 
     print(
-        "\nLatest scan saved."
+        "\nScan log saved."
     )
 
 
 # ============================================================
-# MAIN BOT
+# MAIN
 # ============================================================
 
 def run_bot():
 
-    now_et = datetime.now(
-        ZoneInfo(
-            "America/New_York"
-        )
-    )
+    now = get_new_york_time()
 
     print("======================")
-    print("TREND PULLBACK BOT")
+    print("PULLBACK BOT V2")
     print("======================")
 
     print(
         "New York time:",
-        now_et.strftime(
+        now.strftime(
             "%Y-%m-%d %H:%M:%S %Z"
         ),
     )
 
-    # --------------------------------------------------------
-    # MARKET HOURS
-    # --------------------------------------------------------
+
+    # ========================================================
+    # MARKET OPEN?
+    # ========================================================
 
     if not market_is_open():
 
@@ -940,19 +1235,33 @@ def run_bot():
         return
 
 
-    # --------------------------------------------------------
-    # MARKET REGIME
-    # --------------------------------------------------------
+    # ========================================================
+    # EARLY SESSION?
+    # ========================================================
 
-    if not market_regime_check():
+    if not inside_trade_window():
 
+        print("\nNO TRADE")
         print(
-            "\nFINAL DECISION: NO TRADE"
+            "Reason: Outside "
+            "10:00-11:00 AM ET "
+            "entry window."
         )
 
+        return
+
+
+    # ========================================================
+    # MARKET REGIME
+    # ========================================================
+
+    if not market_regime():
+
+        print("\nNO TRADE")
+
         print(
-            "Reason: Market regime rejected "
-            "long setups."
+            "Reason: Market regime "
+            "not bullish."
         )
 
         return
@@ -962,40 +1271,23 @@ def run_bot():
     print("Scanning watchlist...")
 
 
-    # --------------------------------------------------------
-    # BENCHMARK
-    # --------------------------------------------------------
-
-    spy_return = (
-        get_spy_return()
-    )
-
     results = []
 
 
-    # --------------------------------------------------------
-    # WATCHLIST
-    # --------------------------------------------------------
+    # ========================================================
+    # SCAN
+    # ========================================================
 
     for ticker in WATCHLIST:
 
         try:
 
-            result = scan_stock(
-                ticker,
-                spy_return,
+            result = scan_ticker(
+                ticker
             )
 
             results.append(
                 result
-            )
-
-            print(
-                ticker,
-                "Score:",
-                result["Score"],
-                "Eligible:",
-                result["Eligible"],
             )
 
         except Exception as error:
@@ -1010,21 +1302,15 @@ def run_bot():
     if not results:
 
         print(
-            "\nNo valid market data."
+            "\nNo valid results."
         )
 
         return
 
 
-    # --------------------------------------------------------
-    # RANK RESULTS
-    # --------------------------------------------------------
-
-    results.sort(
-        key=lambda x:
-            x["Score"],
-        reverse=True,
-    )
+    # ========================================================
+    # FIND ELIGIBLE SETUPS
+    # ========================================================
 
     eligible = [
         trade
@@ -1033,71 +1319,60 @@ def run_bot():
     ]
 
 
-    # --------------------------------------------------------
-    # NO TRADE
-    # --------------------------------------------------------
-
     if not eligible:
 
         print("\n======================")
         print("FINAL DECISION")
         print("======================")
+
         print("NO TRADE")
 
-        print(
-            "Best setup:",
-            results[0]["Ticker"],
-        )
-
-        print(
-            "Score:",
-            results[0]["Score"],
-            "/80",
-        )
-
-        save_run_log(
+        save_scan_log(
             results
         )
 
         return
 
 
-    # --------------------------------------------------------
-    # BEST ELIGIBLE SETUP
-    # --------------------------------------------------------
+    # ========================================================
+    # RANK SETUPS
+    #
+    # Highest volume ratio first.
+    # ========================================================
 
-    best_trade = (
-        eligible[0]
+    eligible.sort(
+        key=lambda trade:
+            trade["VolumeRatio"],
+        reverse=True,
     )
 
-    position = (
-        calculate_position(
-            best_trade
-        )
+    best_trade = eligible[0]
+
+
+    # ========================================================
+    # POSITION SIZE
+    # ========================================================
+
+    position = calculate_position(
+        best_trade
     )
 
     if position is None:
 
         print(
-            "Position calculation failed."
+            "Invalid position sizing."
         )
 
         return
 
 
     print("\n======================")
-    print("TRADE CANDIDATE")
+    print("QUALIFYING SETUP")
     print("======================")
 
     print(
         "Ticker:",
         best_trade["Ticker"],
-    )
-
-    print(
-        "Confidence:",
-        best_trade["Score"],
-        "/80",
     )
 
     print(
@@ -1115,47 +1390,42 @@ def run_bot():
         best_trade["Target"],
     )
 
-
-    # --------------------------------------------------------
-    # DUPLICATE PROTECTION
-    # --------------------------------------------------------
-
-    duplicate = already_alerted(
-        best_trade["Ticker"],
-        best_trade["CandleID"],
+    print(
+        "Volume Ratio:",
+        best_trade["VolumeRatio"],
     )
 
-    if duplicate:
+
+    # ========================================================
+    # DUPLICATE CHECK
+    # ========================================================
+
+    if already_alerted(
+        best_trade["Ticker"],
+        best_trade["SignalID"],
+    ):
 
         print(
-            "Signal already alerted "
-            "for this candle."
+            "Signal already alerted."
         )
 
     else:
-
-        print(
-            "New qualifying signal."
-        )
 
         sent = send_trade_alert(
             best_trade,
             position,
         )
 
-        # Only mark it alerted if Discord
-        # actually accepted the message.
         if sent:
 
             mark_alerted(
                 best_trade["Ticker"],
-                best_trade["CandleID"],
+                best_trade["SignalID"],
             )
 
 
-    save_run_log(
-        results,
-        best_trade,
+    save_scan_log(
+        results
     )
 
 
@@ -1164,4 +1434,5 @@ def run_bot():
 # ============================================================
 
 if __name__ == "__main__":
+
     run_bot()
