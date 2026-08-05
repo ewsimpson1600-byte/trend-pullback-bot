@@ -1,0 +1,39 @@
+name: V1.3 Development Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  develop:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy requests
+
+      - name: Run V1.3 development comparison
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+        run: |
+          python develop_v13.py
+
+      - name: Upload V1.3 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v13-development-results
+          path: backtest_results_v13/
+          if-no-files-found: warn
