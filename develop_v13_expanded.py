@@ -131,6 +131,8 @@ MAX_HOLD_MINUTES = 90
 OPTION_DTE = 5
 OPTION_TARGET_RETURN = 0.30
 OPTION_STOP_RETURN = None
+TRAILING_STOP_ACTIVATION_RETURN = None
+TRAILING_STOP_DISTANCE = None
 TARGET_DELTA = 0.50
 
 ENTRY_FRICTION = 0.01
@@ -1466,6 +1468,19 @@ def simulate_trade(
         else None
     )
 
+    trailing_activation_price = (
+        modeled_entry
+        * (
+            1
+            + TRAILING_STOP_ACTIVATION_RETURN
+        )
+        if TRAILING_STOP_ACTIVATION_RETURN
+        is not None
+        else None
+    )
+
+    trailing_stop_price = None
+
 
     final_idx = min(
         entry_idx
@@ -1625,6 +1640,146 @@ def simulate_trade(
                     )
 
                 exit_reason = "OPTION_STOP"
+                exit_time = bar["datetime"]
+
+                break
+
+
+        # ----------------------------------------------------
+        # Optional trailing stop.
+        #
+        # The trail activates after the modeled option reaches
+        # its configured gain and follows the highest modeled
+        # option price. Same-bar ambiguity is handled
+        # conservatively: if a bar can both establish and break
+        # the trail, the trailing stop is assumed to fill first.
+        # ----------------------------------------------------
+
+        if (
+            trailing_activation_price
+            is not None
+            and TRAILING_STOP_DISTANCE
+            is not None
+        ):
+
+            low_spot = float(
+                bar["low"]
+            )
+
+            high_spot = float(
+                bar["high"]
+            )
+
+            low_option = (
+                bs_call_price(
+                    low_spot,
+                    strike,
+                    remaining_years,
+                    RISK_FREE_RATE,
+                    volatility,
+                )
+                * (
+                    1
+                    - EXIT_FRICTION
+                )
+            )
+
+            high_option = (
+                bs_call_price(
+                    high_spot,
+                    strike,
+                    remaining_years,
+                    RISK_FREE_RATE,
+                    volatility,
+                )
+                * (
+                    1
+                    - EXIT_FRICTION
+                )
+            )
+
+            if high_option >= trailing_activation_price:
+
+                candidate_stop = (
+                    high_option
+                    * (
+                        1
+                        - TRAILING_STOP_DISTANCE
+                    )
+                )
+
+                trailing_stop_price = (
+                    candidate_stop
+                    if trailing_stop_price
+                    is None
+                    else max(
+                        trailing_stop_price,
+                        candidate_stop,
+                    )
+                )
+
+            if (
+                trailing_stop_price
+                is not None
+                and low_option
+                <= trailing_stop_price
+            ):
+
+                if high_option >= trailing_stop_price:
+
+                    for _ in range(40):
+
+                        midpoint = (
+                            low_spot
+                            + high_spot
+                        ) / 2
+
+                        price = (
+                            bs_call_price(
+                                midpoint,
+                                strike,
+                                remaining_years,
+                                RISK_FREE_RATE,
+                                volatility,
+                            )
+                            * (
+                                1
+                                - EXIT_FRICTION
+                            )
+                        )
+
+                        if price >= trailing_stop_price:
+
+                            high_spot = midpoint
+
+                        else:
+
+                            low_spot = midpoint
+
+                    exit_stock = high_spot
+                    modeled_exit = trailing_stop_price
+
+                else:
+
+                    exit_stock = float(
+                        bar["open"]
+                    )
+
+                    modeled_exit = (
+                        bs_call_price(
+                            exit_stock,
+                            strike,
+                            remaining_years,
+                            RISK_FREE_RATE,
+                            volatility,
+                        )
+                        * (
+                            1
+                            - EXIT_FRICTION
+                        )
+                    )
+
+                exit_reason = "TRAILING_STOP"
                 exit_time = bar["datetime"]
 
                 break
@@ -2208,6 +2363,17 @@ def summarize(
                         "exit_reason"
                     ]
                     == "OPTION_STOP"
+                )
+                .sum()
+            ),
+
+        "trailing_stop_hits":
+            int(
+                (
+                    trades[
+                        "exit_reason"
+                    ]
+                    == "TRAILING_STOP"
                 )
                 .sum()
             ),

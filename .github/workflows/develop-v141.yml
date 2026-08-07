@@ -1,0 +1,74 @@
+name: V1.4.1 Exit Grid Backtest
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - develop_v13_expanded.py
+      - develop_v141.py
+      - test_v141.py
+      - .github/workflows/develop-v141.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - develop_v13_expanded.py
+      - develop_v141.py
+      - test_v141.py
+      - .github/workflows/develop-v141.yml
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Restore expanded historical-data cache
+        uses: actions/cache/restore@v5
+        with:
+          path: backtest_data_v13_expanded
+          key: v141-expanded-data-${{ github.run_id }}
+          restore-keys: |
+            v141-expanded-data-
+            v14-expanded-data-
+            v13-expanded-data-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy requests
+
+      - name: Run unit tests
+        run: python -m unittest -v test_v14.py test_v141.py
+
+      - name: Run V1.4.1 exit grid
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+        run: python develop_v141.py
+
+      - name: Save historical-data cache
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: backtest_data_v13_expanded
+          key: v141-expanded-data-${{ github.run_id }}
+
+      - name: Upload V1.4.1 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v141-results
+          path: backtest_results_v141/
+          if-no-files-found: warn
