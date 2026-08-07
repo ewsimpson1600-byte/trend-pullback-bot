@@ -1,0 +1,32 @@
+name: Tradier Sandbox Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Test Tradier sandbox
+        env:
+          TRADIER_SANDBOX_TOKEN: ${{ secrets.TRADIER_SANDBOX_TOKEN }}
+          TRADIER_SANDBOX_ACCOUNT: ${{ secrets.TRADIER_SANDBOX_ACCOUNT }}
+        run: |
+          python tradier_connection_test.py
