@@ -91,8 +91,7 @@ def post(path, data):
         f"{BASE_URL}{path}",
         headers={
             **headers(),
-            "Content-Type":
-                "application/x-www-form-urlencoded",
+            "Content-Type": "application/x-www-form-urlencoded",
         },
         data=data,
         timeout=30,
@@ -109,7 +108,7 @@ def post(path, data):
 
 
 # ============================================================
-# BASIC NORMALIZERS
+# SAFE NORMALIZERS
 # ============================================================
 
 def normalize_list(value):
@@ -122,7 +121,43 @@ def normalize_list(value):
     if isinstance(value, dict):
         return [value]
 
+    # Tradier may sometimes return strings such as "null"
+    # or other scalar values when no records exist.
     return []
+
+
+def extract_nested_list(payload, outer_key, inner_key):
+    """
+    Safely handles shapes like:
+
+    {
+        "positions": {
+            "position": [...]
+        }
+    }
+
+    or:
+    {
+        "positions": "null"
+    }
+
+    or:
+    {
+        "positions": null
+    }
+    """
+
+    outer = payload.get(outer_key)
+
+    if outer is None:
+        return []
+
+    if not isinstance(outer, dict):
+        return []
+
+    inner = outer.get(inner_key)
+
+    return normalize_list(inner)
 
 
 # ============================================================
@@ -142,6 +177,11 @@ def check_balance():
         "balances",
         data,
     )
+
+    if not isinstance(balances, dict):
+        raise RuntimeError(
+            "Unexpected balances response from Tradier."
+        )
 
     print("✓ Paper account accessible")
 
@@ -173,13 +213,10 @@ def get_orders():
         f"/accounts/{ACCOUNT_ID}/orders"
     )
 
-    orders = (
-        data.get("orders", {})
-        .get("order")
-    )
-
-    return normalize_list(
-        orders
+    return extract_nested_list(
+        data,
+        "orders",
+        "order",
     )
 
 
@@ -250,13 +287,10 @@ def get_positions():
         f"/accounts/{ACCOUNT_ID}/positions"
     )
 
-    positions = (
-        data.get("positions", {})
-        .get("position")
-    )
-
-    return normalize_list(
-        positions
+    return extract_nested_list(
+        data,
+        "positions",
+        "position",
     )
 
 
@@ -334,15 +368,23 @@ def find_expiration():
         },
     )
 
-    expirations = (
-        data.get("expirations", {})
-        .get("date", [])
+    expirations_container = data.get(
+        "expirations",
+        {}
+    )
+
+    if not isinstance(expirations_container, dict):
+        raise RuntimeError(
+            "Unexpected expiration response."
+        )
+
+    expirations = expirations_container.get(
+        "date",
+        []
     )
 
     if isinstance(expirations, str):
-        expirations = [
-            expirations
-        ]
+        expirations = [expirations]
 
     if not expirations:
         raise RuntimeError(
@@ -410,13 +452,20 @@ def get_chain(expiration):
         },
     )
 
-    options = (
-        data.get("options", {})
-        .get("option", [])
+    options_container = data.get(
+        "options",
+        {}
     )
 
+    if not isinstance(options_container, dict):
+        raise RuntimeError(
+            "Unexpected options-chain response."
+        )
+
     options = normalize_list(
-        options
+        options_container.get(
+            "option"
+        )
     )
 
     if not options:
@@ -455,6 +504,9 @@ def choose_test_call(options):
             option.get("greeks")
             or {}
         )
+
+        if not isinstance(greeks, dict):
+            continue
 
         delta = greeks.get(
             "delta"
@@ -569,6 +621,11 @@ def preview_buy(option):
         data,
     )
 
+    if not isinstance(order, dict):
+        raise RuntimeError(
+            "Unexpected buy preview response."
+        )
+
     print(
         f"Preview status: {order.get('status')}"
     )
@@ -620,6 +677,11 @@ def place_buy(option):
         data,
     )
 
+    if not isinstance(order, dict):
+        raise RuntimeError(
+            "Unexpected buy submission response."
+        )
+
     order_id = order.get(
         "id"
     )
@@ -645,10 +707,17 @@ def get_order(order_id):
         f"/accounts/{ACCOUNT_ID}/orders/{order_id}"
     )
 
-    return data.get(
+    order = data.get(
         "order",
         data,
     )
+
+    if not isinstance(order, dict):
+        raise RuntimeError(
+            "Unexpected order-status response."
+        )
+
+    return order
 
 
 def wait_for_fill(
@@ -754,11 +823,6 @@ def wait_for_fill(
         f"{final_status}"
     )
 
-    print(
-        "This can happen when the options market is closed "
-        "or the sandbox has not simulated the fill yet."
-    )
-
     print()
 
     return (
@@ -796,6 +860,11 @@ def preview_close(option):
         "order",
         data,
     )
+
+    if not isinstance(order, dict):
+        raise RuntimeError(
+            "Unexpected sell preview response."
+        )
 
     if (
         order.get("result")
@@ -839,6 +908,11 @@ def place_close(option):
         "order",
         data,
     )
+
+    if not isinstance(order, dict):
+        raise RuntimeError(
+            "Unexpected sell submission response."
+        )
 
     order_id = order.get(
         "id"
@@ -919,11 +993,6 @@ def main():
             "This workflow is ending normally."
         )
 
-        print(
-            "Before running again, this script will "
-            "check for that existing order."
-        )
-
         return
 
     if buy_result != "filled":
@@ -956,7 +1025,7 @@ def main():
     print("=" * 70)
 
     print(
-        f"Environment: TRADIER SANDBOX"
+        "Environment: TRADIER SANDBOX"
     )
 
     print(
@@ -1003,6 +1072,7 @@ def main():
         buy_result == "filled"
         and close_result == "filled"
     ):
+
         try:
             buy_fill = float(
                 buy_order[
@@ -1050,14 +1120,10 @@ def main():
         )
 
     elif close_result == "pending":
+
         print()
         print(
             "Close order is still pending."
-        )
-
-        print(
-            "The existing-position/order checks will "
-            "prevent accidental duplicate orders on the next run."
         )
 
 
