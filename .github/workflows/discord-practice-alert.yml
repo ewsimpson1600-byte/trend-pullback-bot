@@ -1,0 +1,41 @@
+name: Discord Practice Trade Alert
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - discord_practice_alert.py
+      - .github/workflows/discord-practice-alert.yml
+
+permissions:
+  contents: read
+
+jobs:
+  send-practice-alert:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[discord-practice]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Validate practice message
+        run: python -m unittest -v test_discord_practice_alert.py
+
+      - name: Send practice message
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python discord_practice_alert.py
