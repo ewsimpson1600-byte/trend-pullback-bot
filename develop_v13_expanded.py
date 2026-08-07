@@ -130,6 +130,7 @@ MAX_HOLD_MINUTES = 90
 
 OPTION_DTE = 5
 OPTION_TARGET_RETURN = 0.30
+OPTION_STOP_RETURN = None
 TARGET_DELTA = 0.50
 
 ENTRY_FRICTION = 0.01
@@ -1454,6 +1455,17 @@ def simulate_trade(
         )
     )
 
+    option_stop_price = (
+        modeled_entry
+        * (
+            1
+            + OPTION_STOP_RETURN
+        )
+        if OPTION_STOP_RETURN
+        is not None
+        else None
+    )
+
 
     final_idx = min(
         entry_idx
@@ -1503,6 +1515,119 @@ def simulate_trade(
             remaining_days
             / 365
         )
+
+
+        # ----------------------------------------------------
+        # Optional modeled-option stop.
+        #
+        # Calls are monotonic in the underlying spot, so the
+        # bar low is the conservative point for detecting a
+        # premium stop. When both stop and target are touched
+        # inside the same five-minute bar, stop-first handling
+        # is retained.
+        # ----------------------------------------------------
+
+        if option_stop_price is not None:
+
+            low_spot = float(
+                bar["low"]
+            )
+
+            high_spot = float(
+                bar["high"]
+            )
+
+            low_option = (
+                bs_call_price(
+                    low_spot,
+                    strike,
+                    remaining_years,
+                    RISK_FREE_RATE,
+                    volatility,
+                )
+                * (
+                    1
+                    - EXIT_FRICTION
+                )
+            )
+
+            if low_option <= option_stop_price:
+
+                high_option = (
+                    bs_call_price(
+                        high_spot,
+                        strike,
+                        remaining_years,
+                        RISK_FREE_RATE,
+                        volatility,
+                    )
+                    * (
+                        1
+                        - EXIT_FRICTION
+                    )
+                )
+
+                if high_option >= option_stop_price:
+
+                    for _ in range(40):
+
+                        midpoint = (
+                            low_spot
+                            + high_spot
+                        ) / 2
+
+                        price = (
+                            bs_call_price(
+                                midpoint,
+                                strike,
+                                remaining_years,
+                                RISK_FREE_RATE,
+                                volatility,
+                            )
+                            * (
+                                1
+                                - EXIT_FRICTION
+                            )
+                        )
+
+                        if price >= option_stop_price:
+
+                            high_spot = midpoint
+
+                        else:
+
+                            low_spot = midpoint
+
+                    exit_stock = high_spot
+                    modeled_exit = option_stop_price
+
+                else:
+
+                    # The full bar is below the stop threshold.
+                    # Model a gap fill at the bar open rather
+                    # than granting an unavailable stop price.
+                    exit_stock = float(
+                        bar["open"]
+                    )
+
+                    modeled_exit = (
+                        bs_call_price(
+                            exit_stock,
+                            strike,
+                            remaining_years,
+                            RISK_FREE_RATE,
+                            volatility,
+                        )
+                        * (
+                            1
+                            - EXIT_FRICTION
+                        )
+                    )
+
+                exit_reason = "OPTION_STOP"
+                exit_time = bar["datetime"]
+
+                break
 
 
         # ----------------------------------------------------
@@ -2072,6 +2197,17 @@ def summarize(
                         "exit_reason"
                     ]
                     == "UNDERLYING_STOP"
+                )
+                .sum()
+            ),
+
+        "option_stop_hits":
+            int(
+                (
+                    trades[
+                        "exit_reason"
+                    ]
+                    == "OPTION_STOP"
                 )
                 .sum()
             ),

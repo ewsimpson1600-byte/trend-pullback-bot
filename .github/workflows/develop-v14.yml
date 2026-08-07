@@ -1,0 +1,54 @@
+name: V1.4 Candidate Backtest
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Restore V1.3 expanded historical-data cache
+        uses: actions/cache/restore@v5
+        with:
+          path: backtest_data_v13_expanded
+          key: v14-expanded-data-${{ github.run_id }}
+          restore-keys: |
+            v14-expanded-data-
+            v13-expanded-data-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy requests
+
+      - name: Run V1.4 candidate backtest
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+        run: python develop_v14.py
+
+      - name: Save historical-data cache
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: backtest_data_v13_expanded
+          key: v14-expanded-data-${{ github.run_id }}
+
+      - name: Upload V1.4 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v14-results
+          path: backtest_results_v14/
+          if-no-files-found: warn
