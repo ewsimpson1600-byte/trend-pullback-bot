@@ -95,6 +95,7 @@ SYMBOLS = [
 # ============================================================
 
 DOWNLOAD_START = "2025-12-01"
+DOWNLOAD_END = "2026-09-01"
 
 TEST_START = pd.Timestamp(
     "2026-01-02",
@@ -203,7 +204,7 @@ def build_download_windows():
 
     starts = pd.date_range(
         start=DOWNLOAD_START,
-        end="2026-09-01",
+        end=DOWNLOAD_END,
         freq="MS",
     )
 
@@ -212,7 +213,7 @@ def build_download_windows():
     for start in starts:
 
         if start >= pd.Timestamp(
-            "2026-09-01"
+            DOWNLOAD_END
         ):
             break
 
@@ -395,10 +396,12 @@ def download_symbol(
                 cached["datetime"].max()
             )
 
-            if cached_end >= pd.Timestamp(
-                "2026-08-03 15:00",
-                tz="America/New_York",
-            ):
+            required_cache_end = (
+                TEST_END
+                - pd.Timedelta(hours=1)
+            )
+
+            if cached_end >= required_cache_end:
 
                 print(
                     f"{symbol}: using cached data"
