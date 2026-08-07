@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 from datetime import date
 
@@ -19,7 +18,7 @@ UNDERLYING = "SPY"
 QUANTITY = 1
 
 POLL_SECONDS = 5
-MAX_POLL_ATTEMPTS = 24   # about 2 minutes
+MAX_POLL_ATTEMPTS = 24
 
 
 # ============================================================
@@ -31,16 +30,9 @@ def safety_checks():
     print("TRADIER SANDBOX ROUND-TRIP OPTION TEST")
     print("=" * 70)
 
-    if "sandbox.tradier.com" not in BASE_URL:
+    if BASE_URL != "https://sandbox.tradier.com/v1":
         raise RuntimeError(
-            "SAFETY STOP: BASE_URL is not Tradier sandbox."
-        )
-
-    if "api.tradier.com" in BASE_URL.replace(
-        "sandbox.tradier.com", ""
-    ):
-        raise RuntimeError(
-            "SAFETY STOP: production Tradier URL detected."
+            "SAFETY STOP: Tradier production URL is not allowed."
         )
 
     if not TOKEN:
@@ -62,9 +54,6 @@ def safety_checks():
     print("✓ Sandbox token loaded")
     print(f"✓ Sandbox account: ...{ACCOUNT_ID[-4:]}")
     print("✓ Maximum quantity: 1 contract")
-    print()
-    print("THIS SCRIPT CAN SUBMIT PAPER ORDERS.")
-    print("IT CANNOT ACCESS YOUR LIVE TRADIER ACCOUNT.")
     print()
 
 
@@ -88,10 +77,11 @@ def get(path, params=None):
     )
 
     if not response.ok:
-        print()
-        print(f"GET ERROR {response.status_code}")
+        print(f"\nGET ERROR {response.status_code}")
         print(response.text)
-        raise RuntimeError("Tradier GET request failed.")
+        raise RuntimeError(
+            "Tradier GET request failed."
+        )
 
     return response.json()
 
@@ -109,16 +99,34 @@ def post(path, data):
     )
 
     if not response.ok:
-        print()
-        print(f"POST ERROR {response.status_code}")
+        print(f"\nPOST ERROR {response.status_code}")
         print(response.text)
-        raise RuntimeError("Tradier POST request failed.")
+        raise RuntimeError(
+            "Tradier POST request failed."
+        )
 
     return response.json()
 
 
 # ============================================================
-# ACCOUNT CHECK
+# BASIC NORMALIZERS
+# ============================================================
+
+def normalize_list(value):
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        return value
+
+    if isinstance(value, dict):
+        return [value]
+
+    return []
+
+
+# ============================================================
+# PAPER ACCOUNT CHECK
 # ============================================================
 
 def check_balance():
@@ -130,7 +138,10 @@ def check_balance():
         f"/accounts/{ACCOUNT_ID}/balances"
     )
 
-    balances = data.get("balances", data)
+    balances = data.get(
+        "balances",
+        data,
+    )
 
     print("✓ Paper account accessible")
 
@@ -154,12 +165,164 @@ def check_balance():
 
 
 # ============================================================
+# CHECK EXISTING ORDERS
+# ============================================================
+
+def get_orders():
+    data = get(
+        f"/accounts/{ACCOUNT_ID}/orders"
+    )
+
+    orders = (
+        data.get("orders", {})
+        .get("order")
+    )
+
+    return normalize_list(
+        orders
+    )
+
+
+def check_existing_open_orders():
+    print("=" * 70)
+    print("2. CHECK EXISTING OPEN ORDERS")
+    print("=" * 70)
+
+    orders = get_orders()
+
+    blocking_states = {
+        "pending",
+        "open",
+        "submitted",
+        "partially_filled",
+        "accepted_for_bidding",
+        "calculating",
+    }
+
+    blocking = []
+
+    for order in orders:
+        status = str(
+            order.get("status", "")
+        ).lower()
+
+        symbol = str(
+            order.get("symbol", "")
+        ).upper()
+
+        if (
+            status in blocking_states
+            and symbol == UNDERLYING
+        ):
+            blocking.append(order)
+
+    if blocking:
+        print(
+            "SAFETY STOP: Existing SPY paper order(s) detected."
+        )
+
+        for order in blocking:
+            print(
+                f"Order ID: {order.get('id')} "
+                f"| Status: {order.get('status')} "
+                f"| Side: {order.get('side')}"
+            )
+
+        print()
+        print(
+            "No new paper buy will be submitted."
+        )
+
+        return False
+
+    print("✓ No blocking SPY paper orders found")
+    print()
+
+    return True
+
+
+# ============================================================
+# CHECK EXISTING POSITIONS
+# ============================================================
+
+def get_positions():
+    data = get(
+        f"/accounts/{ACCOUNT_ID}/positions"
+    )
+
+    positions = (
+        data.get("positions", {})
+        .get("position")
+    )
+
+    return normalize_list(
+        positions
+    )
+
+
+def check_existing_spy_option_position():
+    print("=" * 70)
+    print("3. CHECK EXISTING SPY POSITION")
+    print("=" * 70)
+
+    positions = get_positions()
+
+    blocking = []
+
+    for position in positions:
+        symbol = str(
+            position.get("symbol", "")
+        ).upper()
+
+        quantity = position.get(
+            "quantity"
+        )
+
+        try:
+            quantity = float(quantity)
+        except Exception:
+            quantity = 0
+
+        if (
+            quantity != 0
+            and symbol.startswith("SPY")
+        ):
+            blocking.append(
+                position
+            )
+
+    if blocking:
+        print(
+            "SAFETY STOP: Existing SPY paper position detected."
+        )
+
+        for position in blocking:
+            print(
+                f"Symbol: {position.get('symbol')} "
+                f"| Quantity: {position.get('quantity')} "
+                f"| Cost basis: {position.get('cost_basis')}"
+            )
+
+        print()
+        print(
+            "No new paper buy will be submitted."
+        )
+
+        return False
+
+    print("✓ No existing SPY paper position found")
+    print()
+
+    return True
+
+
+# ============================================================
 # FIND EXPIRATION
 # ============================================================
 
 def find_expiration():
     print("=" * 70)
-    print("2. FIND ~5 DTE SPY EXPIRATION")
+    print("4. FIND ~5 DTE SPY EXPIRATION")
     print("=" * 70)
 
     data = get(
@@ -177,7 +340,9 @@ def find_expiration():
     )
 
     if isinstance(expirations, str):
-        expirations = [expirations]
+        expirations = [
+            expirations
+        ]
 
     if not expirations:
         raise RuntimeError(
@@ -189,8 +354,13 @@ def find_expiration():
     candidates = []
 
     for expiration in expirations:
-        exp_date = date.fromisoformat(expiration)
-        dte = (exp_date - today).days
+        exp_date = date.fromisoformat(
+            expiration
+        )
+
+        dte = (
+            exp_date - today
+        ).days
 
         if 3 <= dte <= 10:
             candidates.append(
@@ -208,11 +378,13 @@ def find_expiration():
 
     candidates.sort()
 
-    _, dte, expiration = candidates[0]
+    _, dte, expiration = (
+        candidates[0]
+    )
 
     print(
-        f"✓ Selected expiration: {expiration} "
-        f"({dte} calendar DTE)"
+        f"✓ Selected expiration: "
+        f"{expiration} ({dte} calendar DTE)"
     )
 
     print()
@@ -221,12 +393,12 @@ def find_expiration():
 
 
 # ============================================================
-# GET CHAIN
+# OPTION CHAIN
 # ============================================================
 
 def get_chain(expiration):
     print("=" * 70)
-    print("3. LOAD OPTION CHAIN")
+    print("5. LOAD OPTION CHAIN")
     print("=" * 70)
 
     data = get(
@@ -243,8 +415,9 @@ def get_chain(expiration):
         .get("option", [])
     )
 
-    if isinstance(options, dict):
-        options = [options]
+    options = normalize_list(
+        options
+    )
 
     if not options:
         raise RuntimeError(
@@ -261,24 +434,31 @@ def get_chain(expiration):
 
 
 # ============================================================
-# PICK CALL
+# CHOOSE CALL
 # ============================================================
 
 def choose_test_call(options):
     print("=" * 70)
-    print("4. SELECT ~0.50 DELTA CALL")
+    print("6. SELECT ~0.50 DELTA CALL")
     print("=" * 70)
 
     candidates = []
 
     for option in options:
-
-        if option.get("option_type") != "call":
+        if (
+            option.get("option_type")
+            != "call"
+        ):
             continue
 
-        greeks = option.get("greeks") or {}
+        greeks = (
+            option.get("greeks")
+            or {}
+        )
 
-        delta = greeks.get("delta")
+        delta = greeks.get(
+            "delta"
+        )
 
         if delta is None:
             continue
@@ -288,48 +468,71 @@ def choose_test_call(options):
         except Exception:
             continue
 
-        bid = option.get("bid")
-        ask = option.get("ask")
-
         try:
-            bid = float(bid)
-            ask = float(ask)
+            bid = float(
+                option.get("bid", 0)
+            )
+
+            ask = float(
+                option.get("ask", 0)
+            )
         except Exception:
             continue
 
-        # Skip completely unusable quotes.
         if ask <= 0:
             continue
 
         candidates.append(
             (
-                abs(delta - 0.50),
+                abs(
+                    delta - 0.50
+                ),
                 option,
             )
         )
 
     if not candidates:
         raise RuntimeError(
-            "No suitable SPY call with Greeks/quote found."
+            "No suitable SPY call found."
         )
 
     candidates.sort(
         key=lambda item: item[0]
     )
 
-    option = candidates[0][1]
+    option = (
+        candidates[0][1]
+    )
 
-    greeks = option.get("greeks") or {}
+    greeks = (
+        option.get("greeks")
+        or {}
+    )
 
-    print(f"OCC symbol: {option.get('symbol')}")
-    print(f"Strike: {option.get('strike')}")
+    print(
+        f"OCC symbol: {option.get('symbol')}"
+    )
+
+    print(
+        f"Strike: {option.get('strike')}"
+    )
+
     print(
         f"Expiration: "
         f"{option.get('expiration_date')}"
     )
-    print(f"Delta: {greeks.get('delta')}")
-    print(f"Bid: ${float(option.get('bid', 0)):.2f}")
-    print(f"Ask: ${float(option.get('ask', 0)):.2f}")
+
+    print(
+        f"Delta: {greeks.get('delta')}"
+    )
+
+    print(
+        f"Bid: ${float(option.get('bid', 0)):.2f}"
+    )
+
+    print(
+        f"Ask: ${float(option.get('ask', 0)):.2f}"
+    )
 
     print()
 
@@ -342,7 +545,7 @@ def choose_test_call(options):
 
 def preview_buy(option):
     print("=" * 70)
-    print("5. PREVIEW BUY-TO-OPEN")
+    print("7. PREVIEW BUY-TO-OPEN")
     print("=" * 70)
 
     payload = {
@@ -361,34 +564,25 @@ def preview_buy(option):
         payload,
     )
 
-    order = data.get("order", data)
+    order = data.get(
+        "order",
+        data,
+    )
 
-    print(f"Preview status: {order.get('status')}")
-    print(f"Preview result: {order.get('result')}")
+    print(
+        f"Preview status: {order.get('status')}"
+    )
 
-    if order.get("cost") is not None:
-        print(
-            f"Estimated cost: "
-            f"${abs(float(order['cost'])):,.2f}"
-        )
+    print(
+        f"Preview result: {order.get('result')}"
+    )
 
-    if order.get("commission") is not None:
-        print(
-            f"Commission: "
-            f"${float(order['commission']):,.2f}"
-        )
-
-    if order.get("fees") is not None:
-        print(
-            f"Fees: "
-            f"${float(order['fees']):,.2f}"
-        )
-
-    result = order.get("result")
-
-    if result is False:
+    if (
+        order.get("result")
+        is False
+    ):
         raise RuntimeError(
-            "Tradier preview rejected the paper buy."
+            "Tradier rejected the paper buy preview."
         )
 
     print("✓ Preview passed")
@@ -396,12 +590,12 @@ def preview_buy(option):
 
 
 # ============================================================
-# SUBMIT BUY
+# PLACE PAPER BUY
 # ============================================================
 
 def place_buy(option):
     print("=" * 70)
-    print("6. SUBMIT PAPER BUY-TO-OPEN")
+    print("8. SUBMIT PAPER BUY-TO-OPEN")
     print("=" * 70)
 
     payload = {
@@ -421,23 +615,22 @@ def place_buy(option):
         payload,
     )
 
-    order = data.get("order", data)
+    order = data.get(
+        "order",
+        data,
+    )
 
-    order_id = order.get("id")
+    order_id = order.get(
+        "id"
+    )
 
     if not order_id:
-        print(data)
         raise RuntimeError(
             "Buy submission did not return an order ID."
         )
 
-    print(f"✓ Paper buy submitted")
+    print("✓ Paper buy submitted")
     print(f"Order ID: {order_id}")
-    print(
-        f"Initial API status: "
-        f"{order.get('status')}"
-    )
-
     print()
 
     return order_id
@@ -452,19 +645,25 @@ def get_order(order_id):
         f"/accounts/{ACCOUNT_ID}/orders/{order_id}"
     )
 
-    return data.get("order", data)
+    return data.get(
+        "order",
+        data,
+    )
 
 
-def wait_for_fill(order_id, label):
+def wait_for_fill(
+    order_id,
+    label,
+):
     print("=" * 70)
-    print(f"7. WAIT FOR {label} FILL")
+    print(f"9. WAIT FOR {label} FILL")
     print("=" * 70)
 
-    final_states = {
-        "filled",
+    terminal_failure_states = {
         "rejected",
         "expired",
         "canceled",
+        "cancelled",
         "error",
     }
 
@@ -472,18 +671,24 @@ def wait_for_fill(order_id, label):
         1,
         MAX_POLL_ATTEMPTS + 1,
     ):
-        order = get_order(order_id)
+        order = get_order(
+            order_id
+        )
 
         status = str(
             order.get("status", "")
         ).lower()
 
-        avg_fill_price = order.get(
-            "avg_fill_price"
+        avg_fill_price = (
+            order.get(
+                "avg_fill_price"
+            )
         )
 
-        exec_quantity = order.get(
-            "exec_quantity"
+        exec_quantity = (
+            order.get(
+                "exec_quantity"
+            )
         )
 
         print(
@@ -495,49 +700,70 @@ def wait_for_fill(order_id, label):
 
         if status == "filled":
             print()
-            print(f"✓ {label} FILLED")
             print(
-                f"Average fill price: "
-                f"${float(avg_fill_price):.2f}"
-            )
-            print(
-                f"Executed quantity: "
-                f"{exec_quantity}"
-            )
-            print()
-
-            return order
-
-        if status in final_states:
-            reason = order.get(
-                "reason_description"
+                f"✓ {label} FILLED"
             )
 
             print()
+
+            return (
+                "filled",
+                order,
+            )
+
+        if (
+            status
+            in terminal_failure_states
+        ):
+            print()
             print(
-                f"{label} reached final status: "
+                f"{label} ended with status: "
                 f"{status}"
             )
 
-            if reason:
-                print(
-                    f"Reason: {reason}"
-                )
+            print()
 
-            return order
+            return (
+                "failed",
+                order,
+            )
 
         time.sleep(
             POLL_SECONDS
         )
 
-    print()
-    print(
-        f"TIMEOUT: {label} did not reach "
-        f"a final state."
+    final_order = get_order(
+        order_id
     )
 
-    return get_order(
-        order_id
+    final_status = str(
+        final_order.get(
+            "status",
+            ""
+        )
+    ).lower()
+
+    print()
+    print(
+        f"{label} was not filled within "
+        f"the polling window."
+    )
+
+    print(
+        f"Current order status: "
+        f"{final_status}"
+    )
+
+    print(
+        "This can happen when the options market is closed "
+        "or the sandbox has not simulated the fill yet."
+    )
+
+    print()
+
+    return (
+        "pending",
+        final_order,
     )
 
 
@@ -547,7 +773,7 @@ def wait_for_fill(order_id, label):
 
 def preview_close(option):
     print("=" * 70)
-    print("8. PREVIEW SELL-TO-CLOSE")
+    print("10. PREVIEW SELL-TO-CLOSE")
     print("=" * 70)
 
     payload = {
@@ -566,12 +792,15 @@ def preview_close(option):
         payload,
     )
 
-    order = data.get("order", data)
+    order = data.get(
+        "order",
+        data,
+    )
 
-    print(f"Preview status: {order.get('status')}")
-    print(f"Preview result: {order.get('result')}")
-
-    if order.get("result") is False:
+    if (
+        order.get("result")
+        is False
+    ):
         raise RuntimeError(
             "Sell-to-close preview failed."
         )
@@ -581,12 +810,12 @@ def preview_close(option):
 
 
 # ============================================================
-# SUBMIT CLOSE
+# PLACE CLOSE
 # ============================================================
 
 def place_close(option):
     print("=" * 70)
-    print("9. SUBMIT PAPER SELL-TO-CLOSE")
+    print("11. SUBMIT PAPER SELL-TO-CLOSE")
     print("=" * 70)
 
     payload = {
@@ -606,18 +835,28 @@ def place_close(option):
         payload,
     )
 
-    order = data.get("order", data)
+    order = data.get(
+        "order",
+        data,
+    )
 
-    order_id = order.get("id")
+    order_id = order.get(
+        "id"
+    )
 
     if not order_id:
-        print(data)
         raise RuntimeError(
             "Close submission did not return an order ID."
         )
 
-    print("✓ Paper close submitted")
-    print(f"Order ID: {order_id}")
+    print(
+        "✓ Paper close submitted"
+    )
+
+    print(
+        f"Order ID: {order_id}"
+    )
+
     print()
 
     return order_id
@@ -632,6 +871,18 @@ def main():
 
     check_balance()
 
+    if not check_existing_open_orders():
+        print(
+            "TEST ENDED SAFELY."
+        )
+        return
+
+    if not check_existing_spy_option_position():
+        print(
+            "TEST ENDED SAFELY."
+        )
+        return
+
     expiration = find_expiration()
 
     options = get_chain(
@@ -642,60 +893,49 @@ def main():
         options
     )
 
-    # Preview before submitting anything.
     preview_buy(
         option
     )
-
-    # --------------------------------------------------------
-    # PAPER BUY
-    # --------------------------------------------------------
 
     buy_order_id = place_buy(
         option
     )
 
-    buy_order = wait_for_fill(
+    buy_result, buy_order = wait_for_fill(
         buy_order_id,
         "BUY",
     )
 
-    buy_status = str(
-        buy_order.get(
-            "status",
-            ""
-        )
-    ).lower()
-
-
-    # --------------------------------------------------------
-    # DO NOT ATTEMPT TO CLOSE UNLESS BUY FILLED.
-    # --------------------------------------------------------
-
-    if buy_status != "filled":
-
+    if buy_result == "pending":
         print("=" * 70)
-        print("SAFETY STOP")
+        print("BUY STILL PENDING")
         print("=" * 70)
 
         print(
-            "The buy order was not confirmed filled."
+            "No sell-to-close order was submitted."
         )
 
         print(
-            "No sell-to-close order will be submitted."
+            "This workflow is ending normally."
         )
 
         print(
-            f"Final buy status: {buy_status}"
+            "Before running again, this script will "
+            "check for that existing order."
         )
 
-        sys.exit(1)
+        return
 
+    if buy_result != "filled":
+        print("=" * 70)
+        print("BUY DID NOT FILL")
+        print("=" * 70)
 
-    # --------------------------------------------------------
-    # PAPER CLOSE
-    # --------------------------------------------------------
+        print(
+            "No sell-to-close order was submitted."
+        )
+
+        return
 
     preview_close(
         option
@@ -705,22 +945,10 @@ def main():
         option
     )
 
-    close_order = wait_for_fill(
+    close_result, close_order = wait_for_fill(
         close_order_id,
         "SELL-TO-CLOSE",
     )
-
-    close_status = str(
-        close_order.get(
-            "status",
-            ""
-        )
-    ).lower()
-
-
-    # --------------------------------------------------------
-    # FINAL REPORT
-    # --------------------------------------------------------
 
     print()
     print("=" * 70)
@@ -728,8 +956,7 @@ def main():
     print("=" * 70)
 
     print(
-        f"Environment: "
-        f"TRADIER SANDBOX"
+        f"Environment: TRADIER SANDBOX"
     )
 
     print(
@@ -745,13 +972,12 @@ def main():
     )
 
     print(
-        f"Buy order ID: "
-        f"{buy_order_id}"
+        f"Buy order ID: {buy_order_id}"
     )
 
     print(
         f"Buy status: "
-        f"{buy_status}"
+        f"{buy_order.get('status')}"
     )
 
     print(
@@ -760,13 +986,12 @@ def main():
     )
 
     print(
-        f"Close order ID: "
-        f"{close_order_id}"
+        f"Close order ID: {close_order_id}"
     )
 
     print(
         f"Close status: "
-        f"{close_status}"
+        f"{close_order.get('status')}"
     )
 
     print(
@@ -774,12 +999,10 @@ def main():
         f"{close_order.get('avg_fill_price')}"
     )
 
-
     if (
-        buy_status == "filled"
-        and close_status == "filled"
+        buy_result == "filled"
+        and close_result == "filled"
     ):
-
         try:
             buy_fill = float(
                 buy_order[
@@ -796,13 +1019,11 @@ def main():
             pnl = (
                 close_fill
                 - buy_fill
-            ) * 100 * QUANTITY
+            ) * 100
 
             return_pct = (
-                (
-                    close_fill
-                    / buy_fill
-                )
+                close_fill
+                / buy_fill
                 - 1
             ) * 100
 
@@ -819,34 +1040,24 @@ def main():
         except Exception:
             pass
 
-
         print()
         print(
             "✓ FULL PAPER ROUND TRIP COMPLETED"
         )
 
         print(
-            "✓ BUY-TO-OPEN CONFIRMED"
-        )
-
-        print(
-            "✓ SELL-TO-CLOSE CONFIRMED"
-        )
-
-        print(
             "✓ NO REAL MONEY USED"
         )
 
-    else:
-
+    elif close_result == "pending":
         print()
         print(
-            "WARNING: round trip was not "
-            "fully completed."
+            "Close order is still pending."
         )
 
         print(
-            "Review the order statuses above."
+            "The existing-position/order checks will "
+            "prevent accidental duplicate orders on the next run."
         )
 
 
