@@ -5,8 +5,9 @@ on:
 
   schedule:
     # Runs every 5 minutes during the broad US market window.
-    # The Python script itself enforces the actual 9:45-11:20 ET scan window.
-    - cron: "*/5 13-16 * * 1-5"
+    # The script opens new signals through 11:20 ET and monitors paper exits
+    # through 12:55 ET. The wider UTC range covers EST and EDT.
+    - cron: "*/5 13-18 * * 1-5"
 
 permissions:
   contents: read
@@ -43,7 +44,10 @@ jobs:
           pip install pandas numpy requests
 
       - name: Run notification tests
-        run: python -m unittest -v test_discord_notifications.py
+        run: >-
+          python -m unittest -v
+          test_discord_notifications.py
+          test_paper_trade_tracker.py
 
       - name: Run V1.3 forward scanner
         env:

@@ -9,6 +9,15 @@ import numpy as np
 import pandas as pd
 import requests
 
+from paper_trade_tracker import (
+    activate_pending_trade,
+    apply_exit_to_state,
+    build_exit_alert,
+    create_pending_trade,
+    ensure_paper_state,
+    evaluate_exit,
+)
+
 
 # ============================================================
 # V1.3 VARIANT A — FORWARD TEST SCANNER
@@ -156,9 +165,9 @@ def load_state():
     )
 
     if not STATE_FILE.exists():
-        return {
+        return ensure_paper_state({
             "alerted_signals": []
-        }
+        })
 
     try:
         with open(
@@ -166,12 +175,14 @@ def load_state():
             "r",
             encoding="utf-8",
         ) as file:
-            return json.load(file)
+            return ensure_paper_state(
+                json.load(file)
+            )
 
     except Exception:
-        return {
+        return ensure_paper_state({
             "alerted_signals": []
-        }
+        })
 
 
 def save_state(state):
@@ -186,6 +197,15 @@ def save_state(state):
             "alerted_signals",
             [],
         )[-200:]
+    )
+
+    ensure_paper_state(state)
+
+    state["closed_paper_trades"] = (
+        state.get(
+            "closed_paper_trades",
+            [],
+        )[-100:]
     )
 
     with open(
@@ -223,8 +243,13 @@ def current_market_window():
     return (
         SIGNAL_START
         <= current_time
-        <= "11:20"
+        <= "12:55"
     )
+
+
+def signal_window_open():
+    current_time = now_et().strftime("%H:%M")
+    return SIGNAL_START <= current_time <= "11:20"
 
 
 # ============================================================
@@ -947,6 +972,34 @@ def tradier_get(
     return payload
 
 
+def get_option_quote(option_symbol):
+    payload = tradier_get(
+        "/markets/quotes",
+        params={
+            "symbols": option_symbol,
+            "greeks": "false",
+        },
+    )
+    quote = payload.get("quotes", {}).get("quote")
+    if isinstance(quote, list):
+        quote = quote[0] if quote else None
+    if not quote:
+        return None
+    try:
+        bid = float(quote.get("bid", 0))
+        ask = float(quote.get("ask", 0))
+    except (TypeError, ValueError):
+        return None
+    if bid <= 0 or ask <= 0 or ask < bid:
+        return None
+    return {
+        "symbol": quote.get("symbol", option_symbol),
+        "bid": bid,
+        "ask": ask,
+        "mid": (bid + ask) / 2.0,
+    }
+
+
 # ============================================================
 # FIND ~5 DTE EXPIRATION
 # ============================================================
@@ -1330,8 +1383,184 @@ def build_alert(
         "Option target: +30%\n"
         "Maximum hold: 90 minutes\n\n"
 
+        "Paper tracker: one contract, $1,000 starting balance.\n"
+        "A Discord exit alert will report % and dollar P/L.\n\n"
+
         "⚠️ SIGNAL ONLY — NO ORDER SUBMITTED"
     )
+
+
+# ============================================================
+# PAPER TRADE LIFECYCLE
+# ============================================================
+
+def latest_completed_bar(
+    data,
+    symbol,
+):
+    frame = data.get(symbol)
+    if frame is None or frame.empty:
+        return None
+    return frame.iloc[-1]
+
+
+def deliver_pending_exit(
+    state,
+):
+    pending_exit = state.get(
+        "pending_paper_exit"
+    )
+    if not pending_exit:
+        return False
+
+    projected_balance = (
+        float(state["paper_account_balance"])
+        + float(pending_exit["dollar_pnl"])
+    )
+    alert = build_exit_alert(
+        pending_exit,
+        projected_balance,
+    )
+    send_discord(alert)
+    apply_exit_to_state(
+        state,
+        pending_exit,
+    )
+    print("Paper exit alert delivered.")
+    return True
+
+
+def monitor_paper_trade(
+    state,
+    data,
+):
+    if state.get("pending_paper_exit"):
+        try:
+            deliver_pending_exit(state)
+        except Exception as exc:
+            print(f"Paper exit alert retry failed: {exc}")
+        return
+
+    pending = state.get("pending_paper_trade")
+    if pending:
+        entry_due = datetime.fromisoformat(
+            pending["entry_due_time"]
+        )
+        if now_et() < entry_due:
+            return
+
+        try:
+            quote = get_option_quote(
+                pending["option_symbol"]
+            )
+        except Exception as exc:
+            print(f"Paper entry quote failed: {exc}")
+            return
+
+        if not quote:
+            print("Paper entry deferred: no valid option quote.")
+            return
+
+        opened, skipped = activate_pending_trade(
+            pending,
+            quote["ask"],
+            now_et(),
+            float(state["paper_account_balance"]),
+        )
+
+        state["pending_paper_trade"] = None
+
+        if skipped:
+            message = (
+                "⚪ **PAPER ENTRY SKIPPED — NO REAL ORDER**\n\n"
+                f"**Ticker:** {pending['underlying']}\n"
+                f"**Contract:** {pending['option_symbol']}\n"
+                f"One-contract cost: ${skipped['contract_cost']:.2f}\n"
+                f"Paper account balance: ${skipped['account_balance']:.2f}\n\n"
+                "Reason: insufficient paper cash for one contract."
+            )
+            try:
+                send_discord(message)
+            except Exception as exc:
+                print(f"Paper skip alert failed: {exc}")
+            return
+
+        latest = latest_completed_bar(
+            data,
+            opened["underlying"],
+        )
+        opened["last_checked_bar"] = (
+            latest["datetime"].isoformat()
+            if latest is not None
+            else None
+        )
+        state["open_paper_trade"] = opened
+        print(
+            f"Paper position opened: {opened['option_symbol']} "
+            f"at ${opened['entry_option_price']:.2f}"
+        )
+        return
+
+    opened = state.get("open_paper_trade")
+    if not opened:
+        return
+
+    try:
+        quote = get_option_quote(
+            opened["option_symbol"]
+        )
+    except Exception as exc:
+        print(f"Paper exit quote failed: {exc}")
+        return
+
+    if not quote:
+        print("Paper exit check deferred: no valid option quote.")
+        return
+
+    latest = latest_completed_bar(
+        data,
+        opened["underlying"],
+    )
+    if latest is None:
+        return
+
+    latest_time = latest["datetime"]
+    previous_checked = opened.get(
+        "last_checked_bar"
+    )
+    is_new_bar = (
+        previous_checked is None
+        or latest_time
+        > pd.Timestamp(previous_checked)
+    )
+    underlying_low = (
+        float(latest["low"])
+        if is_new_bar
+        else float("inf")
+    )
+
+    exit_trade = evaluate_exit(
+        opened,
+        quote["bid"],
+        underlying_low,
+        now_et(),
+    )
+
+    if exit_trade is None:
+        if is_new_bar:
+            opened["last_checked_bar"] = (
+                latest_time.isoformat()
+            )
+        return
+
+    state["pending_paper_exit"] = exit_trade
+    try:
+        deliver_pending_exit(state)
+    except Exception as exc:
+        print(
+            "Paper exit recorded but Discord delivery failed; "
+            f"next scan will retry: {exc}"
+        )
 
 
 # ============================================================
@@ -1375,6 +1604,11 @@ def main():
 
     state = load_state()
 
+    monitor_paper_trade(
+        state,
+        data,
+    )
+
     alerted = set(
         state.get(
             "alerted_signals",
@@ -1389,7 +1623,31 @@ def main():
     # Scan every permitted symbol.
     # --------------------------------------------------------
 
-    for symbol in SYMBOLS:
+    active_paper_trade = any(
+        state.get(key)
+        for key in [
+            "pending_paper_trade",
+            "open_paper_trade",
+            "pending_paper_exit",
+        ]
+    )
+
+    symbols_to_scan = (
+        SYMBOLS
+        if (
+            signal_window_open()
+            and not active_paper_trade
+        )
+        else []
+    )
+
+    if active_paper_trade:
+        print(
+            "Paper position lifecycle active; "
+            "new entries are paused."
+        )
+
+    for symbol in symbols_to_scan:
         signal = find_signal(
             symbol,
             data,
@@ -1492,6 +1750,22 @@ def main():
         signals_found.append(
             signal
         )
+
+        if option:
+            state["pending_paper_trade"] = (
+                create_pending_trade(
+                    signal_id,
+                    signal,
+                    option,
+                )
+            )
+
+            print(
+                "Paper entry scheduled for the next scan."
+            )
+
+            # The backtest permits one position at a time.
+            break
 
 
     # --------------------------------------------------------
