@@ -11,9 +11,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: v13-forward-discord-alerts
+  cancel-in-progress: false
+
 jobs:
   scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Checkout repository
@@ -36,6 +41,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pandas numpy requests
+
+      - name: Run notification tests
+        run: python -m unittest -v test_discord_notifications.py
 
       - name: Run V1.3 forward scanner
         env:

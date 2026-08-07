@@ -134,6 +134,11 @@ def safety_checks():
             "TRADIER_SANDBOX_TOKEN is missing."
         )
 
+    if not DISCORD_WEBHOOK_URL:
+        raise RuntimeError(
+            "DISCORD_WEBHOOK_URL is missing."
+        )
+
     print("✓ Signal-only mode")
     print("✓ Order execution disabled")
     print("✓ Tradier sandbox only")
@@ -1207,21 +1212,24 @@ def send_discord(
     message,
 ):
     if not DISCORD_WEBHOOK_URL:
-        print(
+        raise RuntimeError(
             "Discord webhook not configured."
         )
-
-        return
 
     response = requests.post(
         DISCORD_WEBHOOK_URL,
         json={
-            "content": message
+            "content": message,
+            "allowed_mentions": {
+                "parse": [],
+            },
         },
         timeout=20,
     )
 
     response.raise_for_status()
+
+    return True
 
 
 # ============================================================
@@ -1452,8 +1460,10 @@ def main():
         print(alert)
         print()
 
+        delivered = False
+
         try:
-            send_discord(
+            delivered = send_discord(
                 alert
             )
 
@@ -1461,6 +1471,14 @@ def main():
             print(
                 f"Discord alert failed: {exc}"
             )
+
+        if not delivered:
+            print(
+                "Signal was not marked as alerted; "
+                "the next scan may retry delivery."
+            )
+
+            continue
 
 
         # ----------------------------------------------------
