@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
@@ -40,6 +41,43 @@ class OneContractAccountTest(unittest.TestCase):
         )
         account = v142.simulate_one_contract_account(trades)
         self.assertEqual(account.iloc[-1]["account_balance"], 1000.0)
+
+
+class TwelveDataRetryTest(unittest.TestCase):
+    @patch.object(v142.engine.time, "sleep")
+    @patch.object(v142.engine.requests, "get")
+    def test_retries_http_429_and_uses_retry_after(self, get, sleep):
+        limited = MagicMock()
+        limited.status_code = 429
+        limited.headers = {"Retry-After": "2"}
+
+        success = MagicMock()
+        success.status_code = 200
+        success.json.return_value = {
+            "values": [
+                {
+                    "datetime": "2024-01-02 09:30:00",
+                    "open": "100",
+                    "high": "101",
+                    "low": "99",
+                    "close": "100.5",
+                    "volume": "1000",
+                }
+            ]
+        }
+
+        get.side_effect = [limited, success]
+
+        result = v142.engine.fetch_chunk(
+            "TEST",
+            "2024-01-01",
+            "2024-02-01",
+            "secret",
+        )
+
+        self.assertEqual(get.call_count, 2)
+        sleep.assert_called_once_with(2.0)
+        self.assertEqual(result.iloc[0]["symbol"], "TEST")
 
 
 if __name__ == "__main__":
