@@ -1,0 +1,75 @@
+name: V1.5 Risk-Managed Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - develop_v13_expanded.py
+      - develop_v15.py
+      - test_v15.py
+      - .github/workflows/develop-v15.yml
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Restore V1.4.2 development cache
+        uses: actions/cache/restore@v5
+        with:
+          path: backtest_data_v142_oos
+          key: v142-oos-data-${{ github.run_id }}
+          restore-keys: |
+            v142-oos-data-
+
+      - name: Restore V1.5 validation cache
+        uses: actions/cache/restore@v5
+        with:
+          path: backtest_data_v15_validation
+          key: v15-validation-data-${{ github.run_id }}
+          restore-keys: |
+            v15-validation-data-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy requests
+
+      - name: Run unit tests
+        run: >-
+          python -m unittest -v
+          test_v14.py test_v141.py test_v142.py test_v15.py
+
+      - name: Run risk-managed development and untouched validation
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+        run: python develop_v15.py
+
+      - name: Save V1.5 validation cache
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: backtest_data_v15_validation
+          key: v15-validation-data-${{ github.run_id }}
+
+      - name: Upload V1.5 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v15-results
+          path: backtest_results_v15/
+          if-no-files-found: warn
