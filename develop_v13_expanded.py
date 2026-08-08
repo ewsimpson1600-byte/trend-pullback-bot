@@ -416,6 +416,8 @@ def download_symbol(
         / f"{symbol}_5min.csv"
     )
 
+    cached = pd.DataFrame()
+
     if cache_file.exists():
 
         cached = load_cache(
@@ -446,12 +448,33 @@ def download_symbol(
         f"Downloading {symbol}"
     )
 
-    frames = []
+    frames = [cached] if not cached.empty else []
 
     for (
         start_date,
         end_date,
     ) in build_download_windows():
+
+        window_start = pd.Timestamp(
+            start_date,
+            tz="America/New_York",
+        )
+        window_end = pd.Timestamp(
+            end_date,
+            tz="America/New_York",
+        )
+
+        if (
+            not cached.empty
+            and (
+                (cached["datetime"] >= window_start)
+                & (cached["datetime"] < window_end)
+            ).any()
+        ):
+            print(
+                f"  {start_date} -> {end_date} (cached)"
+            )
+            continue
 
         print(
             f"  {start_date} -> {end_date}"
@@ -468,6 +491,29 @@ def download_symbol(
             frames.append(
                 chunk
             )
+
+            checkpoint = (
+                pd.concat(
+                    frames,
+                    ignore_index=True,
+                )
+                .drop_duplicates(
+                    subset=["datetime"]
+                )
+                .sort_values(
+                    "datetime"
+                )
+                .reset_index(
+                    drop=True
+                )
+            )
+
+            save_cache(
+                checkpoint,
+                cache_file,
+            )
+
+            cached = checkpoint
 
         # Keep Twelve Data free-tier request rate safe.
         time.sleep(8)
