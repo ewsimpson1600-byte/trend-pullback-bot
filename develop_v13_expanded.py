@@ -166,6 +166,10 @@ API_BASE = (
     "https://api.twelvedata.com/time_series"
 )
 
+FETCH_MAX_ATTEMPTS = 6
+FETCH_RETRY_BASE_SECONDS = 30
+FETCH_RETRY_MAX_SECONDS = 300
+
 
 # ============================================================
 # BASIC HELPERS
@@ -254,11 +258,39 @@ def fetch_chunk(
         "order": "ASC",
     }
 
-    response = requests.get(
-        API_BASE,
-        params=params,
-        timeout=60,
-    )
+    for attempt in range(1, FETCH_MAX_ATTEMPTS + 1):
+
+        response = requests.get(
+            API_BASE,
+            params=params,
+            timeout=60,
+        )
+
+        if response.status_code != 429:
+            break
+
+        if attempt == FETCH_MAX_ATTEMPTS:
+            response.raise_for_status()
+
+        retry_after = response.headers.get("Retry-After")
+
+        try:
+            delay = float(retry_after)
+        except (TypeError, ValueError):
+            delay = (
+                FETCH_RETRY_BASE_SECONDS
+                * (2 ** (attempt - 1))
+            )
+
+        delay = min(delay, FETCH_RETRY_MAX_SECONDS)
+
+        print(
+            "  Twelve Data rate limit reached; "
+            f"retrying in {delay:g}s "
+            f"(attempt {attempt + 1}/{FETCH_MAX_ATTEMPTS})"
+        )
+
+        time.sleep(delay)
 
     response.raise_for_status()
 
