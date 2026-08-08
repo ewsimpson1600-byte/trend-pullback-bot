@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import pandas as pd
@@ -104,6 +106,67 @@ class CandidateSelectionTest(unittest.TestCase):
             ]
         )
         self.assertEqual(v15.select_candidate(grid), second)
+
+
+class DownloadCheckpointTest(unittest.TestCase):
+    @patch.object(v15.engine.time, "sleep")
+    @patch.object(v15.engine, "fetch_chunk")
+    @patch.object(v15.engine, "build_download_windows")
+    def test_partial_symbol_cache_resumes_at_first_missing_window(
+        self, windows, fetch, _sleep
+    ):
+        windows.return_value = [
+            ("2022-01-01", "2022-02-01"),
+            ("2022-02-01", "2022-03-01"),
+        ]
+        january = pd.DataFrame(
+            {
+                "datetime": [
+                    pd.Timestamp(
+                        "2022-01-03 09:30",
+                        tz="America/New_York",
+                    )
+                ],
+                "symbol": ["BA"],
+                "open": [200.0],
+                "high": [201.0],
+                "low": [199.0],
+                "close": [200.5],
+                "volume": [1000],
+            }
+        )
+        february = january.copy()
+        february["datetime"] = pd.Timestamp(
+            "2022-02-01 09:30",
+            tz="America/New_York",
+        )
+        fetch.return_value = february
+
+        with TemporaryDirectory() as directory:
+            cache_dir = Path(directory)
+            cache_file = cache_dir / "BA_5min.csv"
+            v15.engine.save_cache(january, cache_file)
+
+            with (
+                patch.object(v15.engine, "CACHE_DIR", cache_dir),
+                patch.object(
+                    v15.engine,
+                    "TEST_END",
+                    pd.Timestamp(
+                        "2022-03-01 16:00",
+                        tz="America/New_York",
+                    ),
+                ),
+            ):
+                result = v15.engine.download_symbol("BA", "test-key")
+
+        fetch.assert_called_once_with(
+            "BA",
+            "2022-02-01",
+            "2022-03-01",
+            "test-key",
+        )
+        self.assertEqual(len(result), 2)
 
 
 if __name__ == "__main__":
