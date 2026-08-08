@@ -1,7 +1,10 @@
 {
-  "status": "armed",
-  "version": "pending",
-  "summary": "The autonomous research loop is still running.",
-  "metrics": {},
-  "url": ""
+  "status": "validated",
+  "version": "TEST ONLY — NO STRATEGY VALIDATED",
+  "summary": "This is a test of the autonomous research phone-notification system. No backtest result or strategy status has changed.",
+  "metrics": {
+    "Notification path": "GitHub Actions → Discord",
+    "Purpose": "Delivery test only"
+  },
+  "url": "https://github.com/ewsimpson1600-byte/trend-pullback-bot/actions"
 }
