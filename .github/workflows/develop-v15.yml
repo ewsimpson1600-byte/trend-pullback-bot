@@ -40,8 +40,9 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: backtest_data_v15_validation
-          key: v15-validation-data-${{ github.run_id }}
+          key: v15-validation-data-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
+            v15-validation-data-${{ github.run_id }}-
             v15-validation-data-
 
       - name: Install dependencies
@@ -64,7 +65,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: backtest_data_v15_validation
-          key: v15-validation-data-${{ github.run_id }}
+          key: v15-validation-data-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload V1.5 results
         if: always()
