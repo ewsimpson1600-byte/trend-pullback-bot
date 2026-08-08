@@ -2198,3 +2198,701 @@ def profit_factor(
 ):
 
     gross_profit = (
+        returns[
+            returns > 0
+        ].sum()
+    )
+
+    gross_loss = -(
+        returns[
+            returns < 0
+        ].sum()
+    )
+
+    if gross_loss == 0:
+
+        if gross_profit > 0:
+            return np.inf
+
+        return np.nan
+
+    return (
+        gross_profit
+        / gross_loss
+    )
+
+
+def max_drawdown(
+    returns,
+):
+
+    if len(returns) == 0:
+        return np.nan
+
+    equity = (
+        1 + returns
+    ).cumprod()
+
+    peak = (
+        equity.cummax()
+    )
+
+    drawdown = (
+        equity / peak
+        - 1
+    )
+
+    return float(
+        drawdown.min()
+    )
+
+
+def longest_losing_streak(
+    returns,
+):
+
+    longest = 0
+    current = 0
+
+    for value in returns:
+
+        if value < 0:
+
+            current += 1
+
+            longest = max(
+                longest,
+                current,
+            )
+
+        else:
+
+            current = 0
+
+    return longest
+
+
+def summarize(
+    trades,
+):
+
+    if trades.empty:
+
+        return {
+            "trades": 0,
+        }
+
+    returns = (
+        trades[
+            "option_return_pct"
+        ]
+        / 100
+    )
+
+    underlying = (
+        trades[
+            "underlying_return_pct"
+        ]
+        / 100
+    )
+
+    return {
+        "trades":
+            len(trades),
+
+        "wins":
+            int(
+                (
+                    returns > 0
+                ).sum()
+            ),
+
+        "losses":
+            int(
+                (
+                    returns < 0
+                ).sum()
+            ),
+
+        "win_rate_pct":
+            float(
+                (
+                    returns > 0
+                ).mean()
+                * 100
+            ),
+
+        "avg_option_return_pct":
+            float(
+                returns.mean()
+                * 100
+            ),
+
+        "median_option_return_pct":
+            float(
+                returns.median()
+                * 100
+            ),
+
+        "profit_factor":
+            float(
+                profit_factor(
+                    returns
+                )
+            ),
+
+        "max_drawdown_pct":
+            float(
+                max_drawdown(
+                    returns
+                )
+                * 100
+            ),
+
+        "avg_underlying_return_pct":
+            float(
+                underlying.mean()
+                * 100
+            ),
+
+        "underlying_win_rate_pct":
+            float(
+                (
+                    underlying > 0
+                )
+                .mean()
+                * 100
+            ),
+
+        "longest_losing_streak":
+            longest_losing_streak(
+                returns
+            ),
+
+        "target_hits":
+            int(
+                (
+                    trades[
+                        "exit_reason"
+                    ]
+                    == "OPTION_TARGET"
+                )
+                .sum()
+            ),
+
+        "stop_hits":
+            int(
+                (
+                    trades[
+                        "exit_reason"
+                    ]
+                    == "UNDERLYING_STOP"
+                )
+                .sum()
+            ),
+
+        "option_stop_hits":
+            int(
+                (
+                    trades[
+                        "exit_reason"
+                    ]
+                    == "OPTION_STOP"
+                )
+                .sum()
+            ),
+
+        "trailing_stop_hits":
+            int(
+                (
+                    trades[
+                        "exit_reason"
+                    ]
+                    == "TRAILING_STOP"
+                )
+                .sum()
+            ),
+
+        "time_exits":
+            int(
+                (
+                    trades[
+                        "exit_reason"
+                    ]
+                    == "TIME"
+                )
+                .sum()
+            ),
+    }
+
+
+# ============================================================
+# BY TICKER
+# ============================================================
+
+def build_by_ticker(
+    trades,
+):
+
+    rows = []
+
+    for (
+        symbol,
+        group,
+    ) in trades.groupby(
+        "symbol"
+    ):
+
+        returns = (
+            group[
+                "option_return_pct"
+            ]
+            / 100
+        )
+
+        underlying = (
+            group[
+                "underlying_return_pct"
+            ]
+            / 100
+        )
+
+        rows.append(
+            {
+                "symbol":
+                    symbol,
+
+                "group":
+                    (
+                        "CORE"
+                        if symbol
+                        in CORE_SYMBOLS
+                        else "EXPANDED"
+                    ),
+
+                "trades":
+                    len(group),
+
+                "win_rate_pct":
+                    (
+                        returns > 0
+                    ).mean()
+                    * 100,
+
+                "avg_option_return_pct":
+                    returns.mean()
+                    * 100,
+
+                "profit_factor":
+                    profit_factor(
+                        returns
+                    ),
+
+                "avg_underlying_return_pct":
+                    underlying.mean()
+                    * 100,
+            }
+        )
+
+    return pd.DataFrame(
+        rows
+    ).sort_values(
+        [
+            "trades",
+            "avg_option_return_pct",
+        ],
+        ascending=[
+            False,
+            False,
+        ],
+    )
+
+
+# ============================================================
+# BY MONTH
+# ============================================================
+
+def build_by_month(
+    trades,
+):
+
+    df = trades.copy()
+
+    df["month"] = (
+        pd.to_datetime(
+            df[
+                "entry_time"
+            ],
+            utc=True,
+        )
+        .dt.tz_convert(
+            "America/New_York"
+        )
+        .dt.strftime(
+            "%Y-%m"
+        )
+    )
+
+    rows = []
+
+    for (
+        month,
+        group,
+    ) in df.groupby(
+        "month"
+    ):
+
+        returns = (
+            group[
+                "option_return_pct"
+            ]
+            / 100
+        )
+
+        rows.append(
+            {
+                "month":
+                    month,
+
+                "trades":
+                    len(group),
+
+                "win_rate_pct":
+                    (
+                        returns > 0
+                    ).mean()
+                    * 100,
+
+                "avg_option_return_pct":
+                    returns.mean()
+                    * 100,
+
+                "profit_factor":
+                    profit_factor(
+                        returns
+                    ),
+            }
+        )
+
+    return pd.DataFrame(
+        rows
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    ensure_directories()
+
+    print(
+        "=" * 75
+    )
+
+    print(
+        "V1.3 VARIANT A — EXPANDED UNIVERSE BACKTEST"
+    )
+
+    print(
+        "=" * 75
+    )
+
+    print(
+        f"Symbols: {len(SYMBOLS)}"
+    )
+
+    print(
+        f"Development period: "
+        f"{TEST_START.date()} "
+        f"through "
+        f"{TEST_END.date()}"
+    )
+
+    print()
+
+    print(
+        "IMPORTANT:"
+    )
+
+    print(
+        "Strategy parameters are unchanged."
+    )
+
+    print(
+        "Only the symbol universe is expanded."
+    )
+
+    print()
+
+
+    # --------------------------------------------------------
+    # DOWNLOAD
+    # --------------------------------------------------------
+
+    raw_data = (
+        download_all_data()
+    )
+
+
+    # --------------------------------------------------------
+    # INDICATORS
+    # --------------------------------------------------------
+
+    data = {}
+
+    for symbol in SYMBOLS:
+
+        print(
+            f"Indicators: {symbol}"
+        )
+
+        data[symbol] = (
+            add_indicators(
+                raw_data[
+                    symbol
+                ]
+            )
+        )
+
+
+    # --------------------------------------------------------
+    # MARKET CONFIRMATION
+    # --------------------------------------------------------
+
+    market = (
+        create_market_confirmation(
+            data
+        )
+    )
+
+
+    # --------------------------------------------------------
+    # SIGNALS
+    # --------------------------------------------------------
+
+    print()
+    print(
+        "Finding Variant A signals..."
+    )
+
+    signals = (
+        build_signals(
+            data,
+            market,
+        )
+    )
+
+    print(
+        f"Portfolio-eligible signal timestamps: "
+        f"{len(signals)}"
+    )
+
+    signals.to_csv(
+        RESULTS_DIR
+        / "v13_expanded_signals.csv",
+        index=False,
+    )
+
+
+    # --------------------------------------------------------
+    # TRADES
+    # --------------------------------------------------------
+
+    trades = (
+        run_portfolio(
+            signals,
+            data,
+        )
+    )
+
+    trades.to_csv(
+        RESULTS_DIR
+        / "v13_expanded_trades.csv",
+        index=False,
+    )
+
+
+    # --------------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------------
+
+    summary = (
+        summarize(
+            trades
+        )
+    )
+
+    summary_df = pd.DataFrame(
+        [summary]
+    )
+
+    summary_df.to_csv(
+        RESULTS_DIR
+        / "v13_expanded_summary.csv",
+        index=False,
+    )
+
+
+    # --------------------------------------------------------
+    # BY TICKER / MONTH
+    # --------------------------------------------------------
+
+    by_ticker = (
+        build_by_ticker(
+            trades
+        )
+        if not trades.empty
+        else pd.DataFrame()
+    )
+
+    by_month = (
+        build_by_month(
+            trades
+        )
+        if not trades.empty
+        else pd.DataFrame()
+    )
+
+    by_ticker.to_csv(
+        RESULTS_DIR
+        / "v13_expanded_by_ticker.csv",
+        index=False,
+    )
+
+    by_month.to_csv(
+        RESULTS_DIR
+        / "v13_expanded_by_month.csv",
+        index=False,
+    )
+
+
+    # --------------------------------------------------------
+    # PRINT
+    # --------------------------------------------------------
+
+    print()
+    print()
+    print(
+        "=" * 75
+    )
+
+    print(
+        "V1.3 EXPANDED UNIVERSE RESULTS"
+    )
+
+    print(
+        "=" * 75
+    )
+
+    for (
+        key,
+        value,
+    ) in summary.items():
+
+        print(
+            f"{key}: {value}"
+        )
+
+
+    print()
+    print(
+        "ORIGINAL 7-SYMBOL BASELINE"
+    )
+
+    print(
+        "-" * 75
+    )
+
+    print(
+        "Trades: 11"
+    )
+
+    print(
+        "Win rate: 72.7%"
+    )
+
+    print(
+        "Average modeled option return: +3.70%"
+    )
+
+    print(
+        "Profit factor: 1.50"
+    )
+
+
+    if not by_ticker.empty:
+
+        print()
+        print(
+            "RESULTS BY TICKER"
+        )
+
+        print(
+            "-" * 75
+        )
+
+        print(
+            by_ticker.to_string(
+                index=False
+            )
+        )
+
+
+    if not by_month.empty:
+
+        print()
+        print(
+            "RESULTS BY MONTH"
+        )
+
+        print(
+            "-" * 75
+        )
+
+        print(
+            by_month.to_string(
+                index=False
+            )
+        )
+
+
+    print()
+    print(
+        "INTERPRETATION GUIDE"
+    )
+
+    print(
+        "-" * 75
+    )
+
+    print(
+        "We are NOT requiring the expanded universe "
+        "to maintain exactly a 72.7% win rate."
+    )
+
+    print(
+        "A larger sample with ~55-60%+ wins, PF >1.3, "
+        "positive expectancy and diversified results "
+        "could be more trustworthy."
+    )
+
+    print()
+    print(
+        "NOTE: option returns are still synthetic/model-based, "
+        "not exact historical expired-option quotes."
+    )
+
+    print()
+    print(
+        "Files written to:"
+    )
+
+    print(
+        RESULTS_DIR.resolve()
+    )
+
+
+if __name__ == "__main__":
+    main()
