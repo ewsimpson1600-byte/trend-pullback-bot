@@ -1,0 +1,37 @@
+name: Discord Strategy Research Alert
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/research-notification.json
+
+permissions:
+  contents: read
+
+jobs:
+  send-research-alert:
+    if: contains(github.event.head_commit.message, '[research-notify]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Validate research notification
+        run: python -m unittest -v test_discord_research_alert.py
+
+      - name: Send research notification
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python discord_research_alert.py
