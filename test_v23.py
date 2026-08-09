@@ -41,6 +41,9 @@ class FrozenRulesTest(unittest.TestCase):
         self.assertEqual(v23.FAMILY.target_atr, 1.5)
         self.assertEqual(v23.FAMILY.max_hold_sessions, 5)
 
+    def test_breakdowns_use_v23_result_directory(self):
+        self.assertEqual(v23.RESULTS_DIR.name, "backtest_results_v23")
+
 
 if __name__ == "__main__":
     unittest.main()
