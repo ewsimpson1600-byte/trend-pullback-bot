@@ -77,7 +77,20 @@ def write_period(prefix, signals, trades, skips, summary):
     trades.to_csv(RESULTS_DIR / f"{prefix}_trades.csv", index=False)
     skips.to_csv(RESULTS_DIR / f"{prefix}_skips.csv", index=False)
     pd.DataFrame([summary]).to_csv(RESULTS_DIR / f"{prefix}_summary.csv", index=False)
-    v22.save_breakdowns(prefix, trades)
+    save_breakdowns(prefix, trades)
+
+
+def save_breakdowns(prefix, trades):
+    """Write V2.3 breakdowns to the V2.3 result directory."""
+    if trades.empty:
+        return
+    work = trades.copy()
+    work["month"] = pd.to_datetime(work["entry_time"]).dt.strftime("%Y-%m")
+    work["year"] = pd.to_datetime(work["entry_time"]).dt.year
+    for field, suffix in (("symbol", "ticker"), ("month", "month"), ("year", "year")):
+        work.groupby(field)["trade_pnl"].agg(["count", "sum", "mean"]).to_csv(
+            RESULTS_DIR / f"{prefix}_by_{suffix}.csv"
+        )
 
 
 def main():
