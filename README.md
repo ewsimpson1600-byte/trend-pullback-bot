@@ -14,3 +14,14 @@ The selected policy is then locked and evaluated once on untouched 2022-2023
 data. If no development policy meets the requirements, validation is not run.
 All option prices remain synthetic Black-Scholes estimates rather than
 historical option quotes, and this workflow cannot submit orders.
+
+## V2.1 ETF share validation
+
+`develop_v21.py` pivots away from options and compares three long-only daily
+share strategies on SPY, QQQ, and IWM: trend pullbacks, oversold mean
+reversion, and high-volume breakouts. It uses integer shares in a $1,000 cash
+account, next-session entries, overnight-gap-aware stops, conservative
+slippage and per-share costs, a 2% maximum account risk, and an 80% maximum
+cash allocation. The best qualifying family on 2010-2017 is locked before one
+evaluation on 2018-2025. The workflow is research-only and cannot place an
+order.
