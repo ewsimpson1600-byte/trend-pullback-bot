@@ -1,0 +1,41 @@
+name: V1.9 Swing Pullback Development
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [develop_v19.py, test_v19.py, .github/workflows/develop-v19.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with: {python-version: "3.12"}
+      - uses: actions/cache/restore@v5
+        with:
+          path: backtest_data_v142_oos
+          key: v142-oos-data-${{ github.run_id }}
+          restore-keys: |
+            v142-oos-data-
+      - run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy requests
+      - name: Run unit tests
+        run: python -m unittest -v test_v19.py test_v18.py test_v17.py test_v16.py test_v15.py test_v14.py test_v142.py
+      - name: Run V1.9 development only
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+        run: python develop_v19.py
+      - name: Upload V1.9 development results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v19-development-results
+          path: backtest_results_v19_development/
+          if-no-files-found: warn
