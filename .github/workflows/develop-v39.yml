@@ -1,0 +1,50 @@
+name: V3.9 Blocked Volatility-Expansion Screening
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - develop_v39.py
+      - test_v39.py
+      - .github/workflows/develop-v39.yml
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/cache/restore@v5
+        with:
+          path: backtest_data_v36_history
+          key: v36-history-${{ github.run_id }}
+          restore-keys: |
+            v36-history-
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy requests
+      - name: Run unit tests
+        run: >-
+          python -m unittest -v test_v39.py test_v38.py test_v37.py test_v36.py
+          test_v35.py test_v34.py test_v33.py test_v32.py test_v31.py test_v30.py
+          test_v29.py test_v28.py test_v27.py test_v26.py test_v25.py test_v24.py
+          test_v23.py test_v22.py test_v21.py
+      - name: Run V3.9 blocked screening
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+        run: python develop_v39.py
+      - name: Upload V3.9 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v39-results
+          path: backtest_results_v39/
+          if-no-files-found: warn
