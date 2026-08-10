@@ -51,7 +51,8 @@ def combine_sleeves(mean_trades, trend_trades):
 
 def run_portfolio(data, start, end):
     mean_signals = v26.build_signals(data, start, end)
-    trend_signals = v28.build_signals(data, start, end)
+    trend_data = {symbol: data[symbol] for symbol in v28.SYMBOLS}
+    trend_signals = v28.build_signals(trend_data, start, end)
     mean_trades, mean_skips = v21.run_account(
         mean_signals, data, v26.FAMILY, v21.STARTING_ACCOUNT * MEAN_REVERSION_WEIGHT
     )
