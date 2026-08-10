@@ -1,0 +1,38 @@
+name: V5.1 Two-Year Weekend Screen
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - screen_v51.py
+      - test_v51.py
+      - .github/workflows/screen-v51.yml
+
+permissions:
+  contents: read
+
+jobs:
+  two-year-screen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install pandas numpy requests
+      - name: Run focused tests
+        run: python -m unittest -v test_v51.py test_research_protocol_v47.py test_v46.py test_v21.py
+      - name: Run frozen two-year screen
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+        run: python screen_v51.py
+      - name: Upload V5.1 screen results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v51-screen-results
+          path: screen_results_v51/
+          if-no-files-found: warn
