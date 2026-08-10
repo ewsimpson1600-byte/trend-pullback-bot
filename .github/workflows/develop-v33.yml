@@ -1,0 +1,56 @@
+name: V3.3 Diversified Sector Historical Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - develop_v33.py
+      - test_v33.py
+      - .github/workflows/develop-v33.yml
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Restore sector history cache
+        uses: actions/cache/restore@v5
+        with:
+          path: backtest_data_v33_history
+          key: v33-history-${{ github.run_id }}
+          restore-keys: |
+            v33-history-
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy requests
+      - name: Run unit tests
+        run: >-
+          python -m unittest -v test_v33.py test_v32.py test_v31.py test_v30.py
+          test_v29.py test_v28.py test_v27.py test_v26.py test_v25.py test_v24.py
+          test_v23.py test_v22.py test_v21.py
+      - name: Run V3.3 development and locked historical validation
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+        run: python develop_v33.py
+      - name: Save sector history cache
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: backtest_data_v33_history
+          key: v33-history-${{ github.run_id }}
+      - name: Upload V3.3 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v33-results
+          path: backtest_results_v33/
+          if-no-files-found: warn
