@@ -2,6 +2,9 @@ name: V4.6 Forward-Only Paper Validation
 
 on:
   workflow_dispatch:
+  schedule:
+    # Friday 22:30 UTC, after the regular U.S. equity session closes.
+    - cron: "30 22 * * 5"
   push:
     branches: [main]
     paths:
@@ -11,6 +14,10 @@ on:
 
 permissions:
   contents: read
+
+concurrency:
+  group: v46-forward-paper
+  cancel-in-progress: false
 
 jobs:
   forward-paper:
@@ -36,6 +43,29 @@ jobs:
         env:
           TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
         run: python forward_validate_v46.py
+      - name: Publish forward snapshot summary
+        if: always()
+        run: |
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          from pathlib import Path
+          import pandas as pd
+
+          summary_path = Path("forward_results_v46/v46_forward_summary.csv")
+          status_path = Path("forward_results_v46/v46_forward_status.csv")
+          print("## V4.6 forward-only snapshot")
+          if not summary_path.exists() or not status_path.exists():
+              print("Forward results were not produced; inspect the run log.")
+          else:
+              row = pd.read_csv(summary_path).iloc[0]
+              status = pd.read_csv(status_path).iloc[0, 0]
+              print(f"- Status: **{status}**")
+              print(f"- Data through: {row['data_through']}")
+              print(f"- Completed trades: {int(row['trades'])} / {int(row['minimum_trades'])}")
+              print(f"- Years observed: {int(row['years_observed'])} / {int(row['minimum_years'])}")
+              print(f"- Account return: {float(row['account_return_pct']):.2f}%")
+              print(f"- Profit factor: {float(row['profit_factor']):.2f}")
+              print(f"- Maximum drawdown: {float(row['account_max_drawdown_pct']):.2f}%")
+          PY
       - name: Upload V4.6 forward results
         if: always()
         uses: actions/upload-artifact@v4
