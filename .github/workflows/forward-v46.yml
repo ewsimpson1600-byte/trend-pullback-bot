@@ -1,0 +1,45 @@
+name: V4.6 Forward-Only Paper Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - forward_validate_v46.py
+      - test_v46.py
+      - .github/workflows/forward-v46.yml
+
+permissions:
+  contents: read
+
+jobs:
+  forward-paper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy requests
+      - name: Run unit tests
+        run: >-
+          python -m unittest -v test_v46.py test_v45.py test_v44.py test_v43.py
+          test_v42.py test_v41.py test_v40.py test_v39.py test_v38.py test_v37.py
+          test_v36.py test_v35.py test_v34.py test_v33.py test_v32.py test_v31.py
+          test_v30.py test_v29.py test_v28.py test_v27.py test_v26.py test_v25.py
+          test_v24.py test_v23.py test_v22.py test_v21.py
+      - name: Run forward-only paper validation
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+        run: python forward_validate_v46.py
+      - name: Upload V4.6 forward results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v46-forward-results
+          path: forward_results_v46/
+          if-no-files-found: warn
