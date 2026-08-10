@@ -1,0 +1,67 @@
+name: V3.5 Treasury-Diversified Historical Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - develop_v35.py
+      - test_v35.py
+      - .github/workflows/develop-v35.yml
+
+permissions:
+  contents: read
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/cache/restore@v5
+        with:
+          path: backtest_data_v32_history
+          key: v32-history-${{ github.run_id }}
+          restore-keys: |
+            v32-history-
+      - uses: actions/cache/restore@v5
+        with:
+          path: backtest_data_v33_history
+          key: v33-history-${{ github.run_id }}
+          restore-keys: |
+            v33-history-
+      - uses: actions/cache/restore@v5
+        with:
+          path: backtest_data_v35_treasury_history
+          key: v35-treasury-${{ github.run_id }}
+          restore-keys: |
+            v35-treasury-
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy requests
+      - name: Run unit tests
+        run: >-
+          python -m unittest -v test_v35.py test_v34.py test_v33.py test_v32.py
+          test_v31.py test_v30.py test_v29.py test_v28.py test_v27.py test_v26.py
+          test_v25.py test_v24.py test_v23.py test_v22.py test_v21.py
+      - name: Run V3.5 development and locked historical validation
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+        run: python develop_v35.py
+      - name: Save Treasury history cache
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: backtest_data_v35_treasury_history
+          key: v35-treasury-${{ github.run_id }}
+      - name: Upload V3.5 results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v35-results
+          path: backtest_results_v35/
+          if-no-files-found: warn
