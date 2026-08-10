@@ -25,3 +25,16 @@ slippage and per-share costs, a 2% maximum account risk, and an 80% maximum
 cash allocation. The best qualifying family on 2010-2017 is locked before one
 evaluation on 2018-2025. The workflow is research-only and cannot place an
 order.
+
+## V4.7 two-year research funnel
+
+All new strategy families after V4.6 use `research_protocol_v47.py` before any
+long historical run. The first screen is fixed to January 2, 2024 through
+December 31, 2025. A strategy advances only with at least 20 completed trades,
+positive account return, profit factor of at least 1.25, maximum drawdown no
+worse than -15%, and positive P&L in both calendar years.
+
+Passing this fast screen unlocks longer historical robustness testing; it does
+not constitute validation. Earlier research consumed every historical
+holdout, so only the unchanged 2026-forward paper process can provide fresh
+validation. V4.6 continues weekly with its rules and start date unchanged.
