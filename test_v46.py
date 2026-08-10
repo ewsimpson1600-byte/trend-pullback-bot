@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 import forward_validate_v46 as v46
 
@@ -17,6 +18,11 @@ class ForwardOnlyValidationTest(unittest.TestCase):
         self.assertEqual(v46.v21.STARTING_ACCOUNT, 1000.0)
         self.assertEqual(v46.v21.MAX_RISK, 0.02)
         self.assertEqual(v46.v21.MAX_ALLOCATION, 0.80)
+
+    def test_forward_monitor_runs_weekly(self):
+        workflow = Path(".github/workflows/forward-v46.yml").read_text()
+        self.assertIn('cron: "30 22 * * 5"', workflow)
+        self.assertIn("group: v46-forward-paper", workflow)
 
 
 if __name__ == "__main__":
