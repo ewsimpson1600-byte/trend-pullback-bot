@@ -21,6 +21,9 @@ class DualSleeveTest(unittest.TestCase):
         total = v30.MEAN_REVERSION_WEIGHT * v30.v21.MAX_RISK + v30.TREND_WEIGHT * v30.v21.MAX_RISK
         self.assertAlmostEqual(total, v30.v21.MAX_RISK)
 
+    def test_trend_universe_excludes_sector_only_frames(self):
+        self.assertNotIn("XLF", v30.v28.SYMBOLS)
+
 
 if __name__ == "__main__":
     unittest.main()
