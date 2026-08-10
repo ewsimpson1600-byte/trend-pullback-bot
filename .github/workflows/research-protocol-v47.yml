@@ -1,0 +1,26 @@
+name: V4.7 Two-Year Research Protocol
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - research_protocol_v47.py
+      - test_research_protocol_v47.py
+      - .github/workflows/research-protocol-v47.yml
+
+permissions:
+  contents: read
+
+jobs:
+  protocol-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install pandas
+      - name: Verify frozen two-year funnel
+        run: python -m unittest -v test_research_protocol_v47.py
