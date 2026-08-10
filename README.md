@@ -38,3 +38,17 @@ Passing this fast screen unlocks longer historical robustness testing; it does
 not constitute validation. Earlier research consumed every historical
 holdout, so only the unchanged 2026-forward paper process can provide fresh
 validation. V4.6 continues weekly with its rules and start date unchanged.
+
+## V5.7 historical-screen multiplicity lock
+
+V4.8 through V5.6 evaluated eight structurally distinct strategies on the
+same 2024-2025 screen. V5.2 was the only screen pass and it failed unchanged
+longer robustness as V5.3. That makes the shared two-year window exhausted
+for model selection: trying additional families until one passes would hide
+multiple-testing risk and overfit the screen itself.
+
+`research_protocol_v47.py` now records the complete screen ledger. Existing
+versions remain reproducible, but unseen versions route to forward-only
+predeclaration rather than another historical selection. V4.6 remains the
+active frozen forward paper monitor; no live-order or Discord behavior is
+added by this governance lock.
